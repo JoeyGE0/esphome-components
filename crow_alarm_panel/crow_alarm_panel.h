@@ -54,6 +54,14 @@ struct CrowAlarmPanelMessage {
   uint8_t data_len;
 };
 
+// Transmission state machine states
+enum class TxState : uint8_t {
+  IDLE,          // No transmission pending
+  READY_TO_TX,   // Bus idle, bit buffer prepared, waiting for first falling edge
+  TRANSMITTING,  // Actively outputting bits on each falling edge
+  COMPLETE       // All bits sent, ready for cleanup
+};
+
 struct CrowAlarmPanelKeypad {
   std::string name;
   uint8_t address;
@@ -73,12 +81,18 @@ class CrowAlarmPanelStore {
   uint8_t buffer2[BUFFER_LENGTH];
   uint8_t data_length;
 
-  // std::bitset<BUFFER_LENGTH * 8> tx_buffer;
-  // uint8_t tx_buffer_length = 0;
-  // uint8_t tx_buffer_index = 0;
-  // bool tx_sending = false;
+  // Transmission state machine fields
+  bool tx_buffer[200];              // Bit buffer (max ~20 bytes = 160 bits)
+  uint16_t tx_buffer_length{0};     // Total bits to send
+  uint16_t tx_buffer_index{0};      // Current bit position
+  TxState tx_state{TxState::IDLE};  // Current state
+  uint32_t tx_start_time_us{0};     // When READY_TO_TX entered
+  uint32_t tx_last_bit_time_us{0};  // Last bit sent timestamp
 
   bool data{false};
+  uint32_t last_clock_time_{0};             // Track last clock edge
+  uint32_t last_transmission_time_{0};      // Track last TX completion
+  uint32_t prev_falling_edge_time_us_{0};   // Track last falling edge for glitch filtering
 
  protected:
   ISRInternalGPIOPin clock_pin_;
@@ -86,6 +100,18 @@ class CrowAlarmPanelStore {
   bool inside_{false};
   uint8_t num_bits_;
   uint8_t boundary_buffer_;
+
+ public:
+  static const uint32_t BUS_IDLE_TIMEOUT_US = 5000;          // 5ms idle = bus free
+  static const uint32_t MIN_TX_INTERVAL_MS = 50;             // Min 50ms between TX
+  /**
+   * Minimum interval between falling edges to avoid glitches. The clock runs at ~1.2kHz,
+   * so we expect ~833μs between edges. Setting this to 700μs filters out most glitches while
+   * still allowing normal operation.
+   */
+  static const uint32_t MIN_FALLING_EDGE_INTERVAL_US = 700;  // Min 700μs between falling edges
+  static const uint32_t TX_START_TIMEOUT_US = 100000;        // 100ms to start TX
+  static const uint32_t TX_BIT_TIMEOUT_US = 10000;           // 10ms between bits
 };
 
 struct CrowAlarmPanelZone {
@@ -154,7 +180,7 @@ class CrowAlarmPanel : public Component {
 
   void arm_away();
   void arm_stay();
-  void disarm(const std::string code);
+  void disarm(const std::string &code);
 
   Trigger<uint8_t, std::vector<uint8_t>> *get_on_message_trigger() const { return this->on_message_trigger_; }
 
@@ -164,6 +190,12 @@ class CrowAlarmPanel : public Component {
 
  protected:
   CrowAlarmPanelKeypad find_keypad_(uint8_t address);
+  bool is_bus_idle_();
+
+  // Transmission helper methods
+  void prepare_transmission_();
+  void complete_transmission_();
+  void abort_transmission_();
 
   CrowAlarmPanelStore store_;
   InternalGPIOPin *clock_pin_;
@@ -181,3 +213,5 @@ class CrowAlarmPanel : public Component {
 
 }  // namespace crow_alarm_panel
 }  // namespace esphome
+
+#include "automation.h"

@@ -29,39 +29,44 @@ std::string binary_indices(uint8_t byte) {
 }
 
 void IRAM_ATTR HOT CrowAlarmPanelStore::interrupt(CrowAlarmPanelStore *arg) {
-  // TODO: Add clock glitch filtering to prevent spurious falling edges
-  // The interrupt currently processes every falling edge, but clock line fluctuations
-  // can cause multiple false edges in quick succession. To filter these glitches:
-  //
-  // 1. Track prev_any_edge_time (last time of any clock transition, rising or falling)
-  // 2. Track prev_falling_edge_time (last time of a falling edge specifically)
-  // 3. Only process a falling edge if EITHER:
-  //    - At least 100us has passed since any clock transition, OR
-  //    - At least 700us has passed since the last falling edge
-  //
-  // This requires:
-  // - Adding timestamp fields to CrowAlarmPanelStore (uint32_t in microseconds)
-  // - Calling micros() in this interrupt to get current time
-  // - Checking timing conditions before processing the data bit
-  // - Also tracking rising edges to update prev_any_edge_time
-  //
-  // Note: Consider using gpio::INTERRUPT_ANY_EDGE and manually detecting falling edges
-  // to properly track both rising and falling transitions for the "any edge" filter.
+  uint32_t now = micros();
+  arg->last_clock_time_ = now;  // Track last clock edge for bus idle detection
 
-  // if (arg->tx_sending) {
-  //   if (arg->tx_buffer_index < arg->tx_buffer_length) {
-  //     if (arg->tx_buffer[arg->tx_buffer_index]) {
-  //       arg->data_pin_.digital_write(true);
-  //     } else {
-  //       arg->data_pin_.digital_write(false);
-  //     }
-  //     arg->tx_buffer_index++;
-  //     return;
-  //   }
-  //   arg->tx_sending = false;
-  //   arg->data_pin_.pin_mode(gpio::FLAG_INPUT);
-  // }
+  // Clock glitch filtering - ignore edges that are too close together
+  if (now - arg->prev_falling_edge_time_us_ < MIN_FALLING_EDGE_INTERVAL_US) {
+    return;  // Glitch detected, ignore this edge
+  }
+  arg->prev_falling_edge_time_us_ = now;
 
+  // Priority: if we're currently receiving data, skip transmission entirely
+  // The data flag indicates we're in the middle of receiving a message
+  // The inside_ flag indicates we're inside a boundary (receiving packet)
+  // We're receiving - skip transmission logic and handle receive below
+  if (!arg->data && !arg->inside_) {
+    if (arg->tx_state == TxState::READY_TO_TX) {
+      // First falling edge - start transmission
+      arg->tx_state = TxState::TRANSMITTING;
+      arg->tx_last_bit_time_us = now;
+      arg->data_pin_.digital_write(arg->tx_buffer[0]);
+      arg->tx_buffer_index = 1;
+      return;
+    }
+
+    if (arg->tx_state == TxState::TRANSMITTING) {
+      arg->tx_last_bit_time_us = now;
+      if (arg->tx_buffer_index < arg->tx_buffer_length) {
+        // Send next bit
+        arg->data_pin_.digital_write(arg->tx_buffer[arg->tx_buffer_index++]);
+        return;
+      } else {
+        // Transmission complete
+        arg->tx_state = TxState::COMPLETE;
+        return;
+      }
+    }
+  }
+
+  // Handle receive mode
   bool data_bit = arg->data_pin_.digital_read();
 
   if (!arg->data && data_bit)
@@ -101,13 +106,6 @@ void IRAM_ATTR HOT CrowAlarmPanelStore::interrupt(CrowAlarmPanelStore *arg) {
     arg->inside_ = true;
     return;
   }
-  // if (arg->tx_buffer_index < arg->tx_buffer_length) {
-  //   arg->tx_sending = true;
-
-  //   // arg->data_pin_.digital_write(false);
-  //   arg->data_pin_.pin_mode(gpio::FLAG_OUTPUT);
-  //   arg->data_pin_.digital_write(false);
-  // }
 }
 
 void CrowAlarmPanel::setup() {
@@ -148,7 +146,7 @@ void CrowAlarmPanel::loop() {
       data.insert(data.begin(), this->store_.buffer2 + 1, this->store_.buffer2 + this->store_.data_length - 1);
       memset(this->store_.buffer2, 0, BUFFER_LENGTH);
       this->store_.data_length = 0;
-    } // Lock automatically released
+    }  // Lock automatically released
 
     ESP_LOGD(TAG, "Received data: [%02x.%s]", type, format_hex_pretty(data).c_str());
 
@@ -282,56 +280,92 @@ void CrowAlarmPanel::loop() {
         break;
     }
     this->on_message_trigger_->trigger(type, data);
-  } else if (!this->tx_buffer_.empty() && !this->store_.data) {
-    InterruptLock lock;
-    this->clock_pin_->pin_mode(gpio::FLAG_OUTPUT);
-    this->data_pin_->pin_mode(gpio::FLAG_OUTPUT);
-    std::vector<uint8_t> to_send = this->tx_buffer_[0];
-    std::string s;
-    this->tx_buffer_.erase(this->tx_buffer_.begin());
-    for (uint8_t i = 0; i < to_send.size(); i++) {
-      for (uint8_t j = 0; j < 8; j++) {
-        this->clock_pin_->digital_write(true);
-        this->data_pin_->digital_write(to_send[i] & (1 << j));
-        this->clock_pin_->digital_write(false);
-        s += (to_send[i] & (1 << j)) ? "1" : "0";
-        delay(1);
+  }
+
+  // Handle transmission state machine
+  switch (this->store_.tx_state) {
+    case TxState::IDLE:
+      // Check if we can start a new transmission
+      if (!this->tx_buffer_.empty() && this->is_bus_idle_()) {
+        this->prepare_transmission_();
       }
-      s += " (";
-      s += format_hex(to_send.data() + i, 1);
-      s += ") ";
-    }
+      break;
 
-    this->clock_pin_->pin_mode(gpio::FLAG_INPUT);
-    this->data_pin_->pin_mode(gpio::FLAG_INPUT);
+    case TxState::READY_TO_TX:
+      // Check for start timeout
+      if (micros() - this->store_.tx_start_time_us > CrowAlarmPanelStore::TX_START_TIMEOUT_US) {
+        ESP_LOGW(TAG, "TX start timeout - no clock edge");
+        this->abort_transmission_();
+      }
+      break;
 
-    ESP_LOGD(TAG, "Sending Bits: %s", s.c_str());
+    case TxState::TRANSMITTING:
+      // Check for stuck transmission
+      if (micros() - this->store_.tx_last_bit_time_us > CrowAlarmPanelStore::TX_BIT_TIMEOUT_US) {
+        ESP_LOGW(TAG, "TX stuck - no clock edges");
+        this->abort_transmission_();
+      }
+      break;
 
-    // if (this->store_.tx_buffer_index == this->store_.tx_buffer_length) {
-    //   std::vector<uint8_t> to_send = this->tx_buffer_[0];
-    //   this->tx_buffer_.erase(this->tx_buffer_.begin());
-    //   std::string s;
-    //   for (uint8_t i = 0; i < to_send.size(); i++) {
-    //     for (uint8_t j = 0; j < 8; j++) {
-    //       this->store_.tx_buffer[i * 8 + j] = (to_send[i] & (1 << j)) ? 1 : 0;
-    //       s += (to_send[i] & (1 << j)) ? "1" : "0";
-    //     }
-    //     s += " (";
-    //     s += format_hex(to_send.data() + i, 1);
-    //     s += ") ";
-    //   }
-    //   this->store_.tx_buffer_length = to_send.size() * 8;
-    //   this->store_.tx_buffer_index = 0;
-    //   ESP_LOGD(TAG, "Sending Bits: %s", s.c_str());
-    // }
+    case TxState::COMPLETE:
+      this->complete_transmission_();
+      break;
   }
 }
 
-void CrowAlarmPanel::arm_away() {}
+bool CrowAlarmPanel::is_bus_idle_() {
+  // Check basic data flag
+  if (this->store_.data) {
+    return false;
+  }
 
-void CrowAlarmPanel::arm_stay() {}
+  // Check time since last clock activity
+  uint32_t now_us = micros();
+  uint32_t time_since_clock = now_us - this->store_.last_clock_time_;
 
-void CrowAlarmPanel::disarm(const std::string code) {}
+  if (time_since_clock < CrowAlarmPanelStore::BUS_IDLE_TIMEOUT_US) {
+    return false;
+  }
+
+  // Check minimum interval since last transmission
+  uint32_t now_ms = millis();
+  uint32_t time_since_tx = now_ms - this->store_.last_transmission_time_;
+
+  if (time_since_tx < CrowAlarmPanelStore::MIN_TX_INTERVAL_MS) {
+    return false;
+  }
+
+  return true;
+}
+
+void CrowAlarmPanel::arm_away() {
+  // Send ARM key via keypress
+  this->keypress(13);  // ARM key is index 13 in KEYS array
+  ESP_LOGD(TAG, "Arming away");
+}
+
+void CrowAlarmPanel::arm_stay() {
+  // Send STAY key via keypress
+  this->keypress(14);  // STAY key is index 14 in KEYS array
+  ESP_LOGD(TAG, "Arming stay");
+}
+
+void CrowAlarmPanel::disarm(const std::string &code) {
+  if (code.empty()) {
+    ESP_LOGW(TAG, "Cannot disarm without code");
+    return;
+  }
+
+  // Queue all digits - the transmission loop handles spacing
+  for (char c : code) {
+    if (c >= '0' && c <= '9') {
+      uint8_t key = c - '0';  // Keys 0-9 are indices 0-9
+      this->keypress(key);    // Just queue it, no delay
+    }
+  }
+
+  ESP_LOGD(TAG, "Disarming with code");
+}
 
 void CrowAlarmPanel::set_output(uint8_t output, bool state) {}
 
@@ -350,6 +384,60 @@ void CrowAlarmPanel::keypress(uint8_t key) {
   data.push_back(this->keypad_address_);
   data.push_back(key);
   this->send_packet(KEYPRESS, data);
+}
+
+void CrowAlarmPanel::prepare_transmission_() {
+  InterruptLock lock;
+
+  // Get next packet to send
+  std::vector<uint8_t> to_send = this->tx_buffer_[0];
+  this->tx_buffer_.erase(this->tx_buffer_.begin());
+
+  // Convert bytes to bit buffer (LSB first)
+  uint16_t bit_index = 0;
+  std::string debug_str;
+  for (uint8_t byte : to_send) {
+    for (uint8_t j = 0; j < 8; j++) {
+      this->store_.tx_buffer[bit_index++] = (byte & (1 << j)) ? true : false;
+      debug_str += (byte & (1 << j)) ? "1" : "0";
+    }
+    debug_str += " (";
+    debug_str += format_hex(&byte, 1);
+    debug_str += ") ";
+  }
+  this->store_.tx_buffer_length = bit_index;
+  this->store_.tx_buffer_index = 0;
+
+  // Set up for transmission
+  this->store_.tx_start_time_us = micros();
+  this->data_pin_->pin_mode(gpio::FLAG_OUTPUT);
+  this->data_pin_->digital_write(false);  // Pull low for bus arbitration
+  this->store_.tx_state = TxState::READY_TO_TX;
+
+  ESP_LOGD(TAG, "Prepared TX: %d bits - %s", bit_index, debug_str.c_str());
+}
+
+void CrowAlarmPanel::complete_transmission_() {
+  InterruptLock lock;
+
+  // Release data pin
+  this->data_pin_->pin_mode(gpio::FLAG_INPUT);
+
+  // Update timing
+  this->store_.last_transmission_time_ = millis();
+  this->store_.tx_state = TxState::IDLE;
+
+  ESP_LOGD(TAG, "TX complete: %d bits sent", this->store_.tx_buffer_index);
+}
+
+void CrowAlarmPanel::abort_transmission_() {
+  InterruptLock lock;
+
+  // Release data pin
+  this->data_pin_->pin_mode(gpio::FLAG_INPUT);
+  this->store_.tx_state = TxState::IDLE;
+
+  ESP_LOGW(TAG, "TX aborted at bit %d/%d", this->store_.tx_buffer_index, this->store_.tx_buffer_length);
 }
 
 }  // namespace crow_alarm_panel
