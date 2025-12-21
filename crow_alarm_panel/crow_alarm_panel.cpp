@@ -197,10 +197,10 @@ void CrowAlarmPanel::loop() {
         }
         break;
       }
-      case KEYPRESS_ALT: {
+      case KEYPRESS: {
         uint8_t key = data[1];
         CrowAlarmPanelKeypad keypad = this->find_keypad_(data[0]);
-        ESP_LOGD(TAG, "Key %s (%d) pressed on %s [%02x.%s]", KEYS_ALT[key], key, keypad.name.c_str(), type,
+        ESP_LOGD(TAG, "Key %s (%d) pressed on %s [%02x.%s]", KEYS[key], key, keypad.name.c_str(), type,
                  format_hex_pretty(data).c_str());
         break;
       }
@@ -274,7 +274,7 @@ void CrowAlarmPanel::loop() {
     if (now_ms - this->last_keypress_sent_ms_ >= 500) {
       uint8_t key = this->keypress_queue_.front();
       this->keypress_queue_.erase(this->keypress_queue_.begin());
-      ESP_LOGD(TAG, "Sending queued keypress: %s (%d)", KEYS_ALT[key], key);
+      ESP_LOGD(TAG, "Sending queued keypress: %s (%d)", KEYS[key], key);
       this->keypress(key);
       this->last_keypress_sent_ms_ = now_ms;
     }
@@ -360,22 +360,22 @@ void IRAM_ATTR CrowAlarmPanel::send_packet_blocking_(const std::vector<uint8_t> 
 
 void CrowAlarmPanel::arm_away() {
   ESP_LOGD(TAG, "Arm away");
-  this->keypress(KEY_ARM_ALT);  // ARM key
+  this->keypress(KEY_ARM);
 }
 
 void CrowAlarmPanel::arm_stay() {
   ESP_LOGD(TAG, "Arm stay");
-  this->keypress(KEY_STAY_ALT);  // STAY key
+  this->keypress(KEY_STAY);
 }
 
 void CrowAlarmPanel::disarm(const std::string &code) {
-  ESP_LOGI(TAG, "Disarm with code (queued)");
+  ESP_LOGD(TAG, "Disarm with code (queued)");
   for (char c : code) {
     if (c >= '0' && c <= '9') {
       this->keypress_queue_.push_back(c - '0');
     }
   }
-  this->keypress_queue_.push_back(KEY_ENTER_ALT);
+  this->keypress_queue_.push_back(KEY_ENTER);
 }
 
 void CrowAlarmPanel::set_output(uint8_t output, bool state) {}
@@ -406,9 +406,9 @@ void CrowAlarmPanel::send_packet(uint8_t type, const std::vector<uint8_t> &data)
 }
 
 void CrowAlarmPanel::keypress(uint8_t key) {
-  ESP_LOGI(TAG, "Keypress: %s (%d)", KEYS_ALT[key], key);
+  ESP_LOGD(TAG, "Keypress: %s (%d)", KEYS[key], key);
   std::vector<uint8_t> data = {key};
-  this->send_packet(KEYPRESS_ALT, data);
+  this->send_packet(KEYPRESS, data);
 }
 
 }  // namespace crow_alarm_panel
