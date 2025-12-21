@@ -1,7 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
-#include "esphome/components/crow_alarm_panel/crow_alarm_panel.h"
+#include "../crow_alarm_panel.h"
 #include "esphome/components/switch/switch.h"
 
 namespace esphome {

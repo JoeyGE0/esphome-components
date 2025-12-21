@@ -76,7 +76,7 @@ class CrowAlarmPanelStore {
 
   uint8_t buffer[BUFFER_LENGTH];
   uint8_t buffer2[BUFFER_LENGTH];
-  uint8_t data_length;
+  uint8_t data_length{0};
 
   bool data{false};
   uint32_t last_clock_time_{0};             // Track last clock edge
@@ -88,8 +88,8 @@ class CrowAlarmPanelStore {
  protected:
   ISRInternalGPIOPin clock_pin_;
   ISRInternalGPIOPin data_pin_;
-  uint8_t num_bits_;
-  uint8_t boundary_buffer_;
+  uint8_t num_bits_{0};
+  uint8_t boundary_buffer_{0};
 
  public:
   static const uint32_t BUS_IDLE_TIMEOUT_US = 5000;          // 5ms idle = bus free
@@ -134,7 +134,7 @@ class CrowAlarmPanel : public Component {
   }
 
   void register_zone(binary_sensor::BinarySensor *binary_sensor, uint8_t zone) {
-    for (CrowAlarmPanelZone z : this->zones_) {
+    for (auto &z : this->zones_) {
       if (z.zone == zone) {
         z.motion_binary_sensor = binary_sensor;
         return;
@@ -147,7 +147,7 @@ class CrowAlarmPanel : public Component {
     });
   }
   void register_zone_bypass(binary_sensor::BinarySensor *binary_sensor, uint8_t zone) {
-    for (CrowAlarmPanelZone z : this->zones_) {
+    for (auto &z : this->zones_) {
       if (z.zone == zone) {
         z.bypass_binary_sensor = binary_sensor;
         return;
@@ -171,6 +171,9 @@ class CrowAlarmPanel : public Component {
   void arm_away();
   void arm_stay();
   void disarm(const std::string &code);
+  bool is_disarm_in_progress() const { return this->disarm_in_progress_; }
+  bool is_arm_in_progress() const { return this->arm_in_progress_; }
+  bool is_armed() const { return this->armed_state_ != nullptr && this->armed_state_->state != "disarmed"; }
 
   Trigger<uint8_t, std::vector<uint8_t>> *get_on_message_trigger() const { return this->on_message_trigger_; }
 
@@ -184,9 +187,13 @@ class CrowAlarmPanel : public Component {
 
   // Transmission methods (blocking)
   void send_packet_blocking_(const std::vector<uint8_t> &packet);
-  void wait_for_clock_edge_(bool wait_for_high);
+  bool wait_for_clock_edge_(bool wait_for_high, uint32_t timeout_us);
   std::vector<uint8_t> keypress_queue_;
   uint32_t last_keypress_sent_ms_{0};
+  bool disarm_in_progress_{false};
+  uint32_t disarm_started_ms_{0};
+  bool arm_in_progress_{false};
+  uint32_t arm_started_ms_{0};
 
   CrowAlarmPanelStore store_;
   InternalGPIOPin *clock_pin_;
@@ -202,5 +209,3 @@ class CrowAlarmPanel : public Component {
 
 }  // namespace crow_alarm_panel
 }  // namespace esphome
-
-#include "automation.h"

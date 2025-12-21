@@ -15,6 +15,11 @@ void CrowAlarmPanelStore::setup(InternalGPIOPin *clock_pin, InternalGPIOPin *dat
   data_pin->setup();
   this->clock_pin_ = clock_pin->to_isr();
   this->data_pin_ = data_pin->to_isr();
+  memset(this->buffer, 0, sizeof(this->buffer));
+  memset(this->buffer2, 0, sizeof(this->buffer2));
+  this->data_length = 0;
+  this->num_bits_ = 0;
+  this->boundary_buffer_ = 0;
   clock_pin->attach_interrupt(CrowAlarmPanelStore::interrupt, this, gpio::INTERRUPT_FALLING_EDGE);
 }
 
@@ -124,6 +129,14 @@ CrowAlarmPanelKeypad CrowAlarmPanel::find_keypad_(uint8_t address) {
 
 void CrowAlarmPanel::loop() {
   if (this->store_.data_length) {
+    if (this->store_.data_length < 2) {
+      ESP_LOGW(TAG, "Discarding short frame (%d bytes)", this->store_.data_length);
+      InterruptLock lock;
+      memset(this->store_.buffer2, 0, BUFFER_LENGTH);
+      this->store_.data_length = 0;
+      return;
+    }
+
     uint8_t type;
     std::vector<uint8_t> data;
     {
@@ -138,6 +151,10 @@ void CrowAlarmPanel::loop() {
 
     switch (type) {
       case OUTPUT_STATE:
+        if (data.size() < 1) {
+          ESP_LOGW(TAG, "Output state too short, discarding");
+          break;
+        }
         ESP_LOGD(TAG, "Output state [%s]", format_hex_pretty(data).c_str());
         for (CrowAlarmPanelOutput output : this->outputs_) {
           bool on = ((data[0] >> (output.number - 1)) & 0x01);
@@ -165,12 +182,15 @@ void CrowAlarmPanel::loop() {
 
           if (triggered) {
             ESP_LOGD(TAG, "Zone %d active", zone.zone);
-            if (this->armed_state_->state != "arming")
+            if (this->armed_state_ != nullptr && this->armed_state_->state != "arming") {
               this->armed_state_->publish_state("disarmed");  // Assume disarmed if motion detected in this byte
+            }
             clear = false;
           }
           if (triggered_alarmed) {
-            this->armed_state_->publish_state("pending");
+            if (this->armed_state_ != nullptr) {
+              this->armed_state_->publish_state("pending");
+            }
             ESP_LOGD(TAG, "Alarm pending from zone %d", zone.zone);
             clear = false;
           }
@@ -198,13 +218,29 @@ void CrowAlarmPanel::loop() {
         break;
       }
       case KEYPRESS: {
+        if (data.size() < 2) {
+          ESP_LOGW(TAG, "Keypress too short, discarding");
+          break;
+        }
         uint8_t key = data[1];
+        if (key >= sizeof(KEYS) / sizeof(KEYS[0])) {
+          ESP_LOGW(TAG, "Unknown key index %d, discarding", key);
+          break;
+        }
         CrowAlarmPanelKeypad keypad = this->find_keypad_(data[0]);
         ESP_LOGD(TAG, "Key %s (%d) pressed on %s [%02x.%s]", KEYS[key], key, keypad.name.c_str(), type,
                  format_hex_pretty(data).c_str());
         break;
       }
       case CURRENT_TIME: {
+        if (data.size() < 7) {
+          ESP_LOGW(TAG, "Current time too short, discarding");
+          break;
+        }
+        if (data[0] == 0 || data[0] > 7) {
+          ESP_LOGW(TAG, "Current time has invalid day index %d", data[0]);
+          break;
+        }
         const char *day_of_week = DAYS[data[0] - 1];
         uint8_t mins = data[2];
         uint8_t hour = data[1];
@@ -218,20 +254,36 @@ void CrowAlarmPanel::loop() {
         break;
       }
       case RESPONSE_TIME:
+        if (data.size() < 3) {
+          ESP_LOGW(TAG, "Response time too short, discarding");
+          break;
+        }
         ESP_LOGD(TAG, "Current time setting received [%d]", (data[1] << 8) | data[2]);
         break;
       case KEYPAD_COMMAND: {
+        if (data.empty()) {
+          ESP_LOGW(TAG, "Keypad command too short, discarding");
+          break;
+        }
         CrowAlarmPanelKeypad keypad = this->find_keypad_(data[0]);
         ESP_LOGD(TAG, "%s command [%02x.%s]", keypad.name.c_str(), type, format_hex_pretty(data).c_str());
         break;
       }
       case KEYPAD_STATE: {
+        if (data.size() < 2) {
+          ESP_LOGW(TAG, "Keypad state too short, discarding");
+          break;
+        }
         CrowAlarmPanelKeypad keypad = this->find_keypad_(data[0]);
         if (data[1] == 00) {
           ESP_LOGD(TAG, "%s in normal state [%02x.%s]", keypad.name.c_str(), type, format_hex_pretty(data).c_str());
         } else if (data[1] == 02) {
           ESP_LOGD(TAG, "%s in installer mode [%02x.%s]", keypad.name.c_str(), type, format_hex_pretty(data).c_str());
         } else if (data[1] == 03) {
+          if (data.size() < 3) {
+            ESP_LOGW(TAG, "Keypad programming state too short, discarding");
+            break;
+          }
           ESP_LOGD(TAG, "%s programming %d [%02x.%s]", keypad.name.c_str(), data[2], type,
                    format_hex_pretty(data).c_str());
         } else {
@@ -240,23 +292,39 @@ void CrowAlarmPanel::loop() {
         break;
       }
       case SETTING_VALUE: {
+        if (data.size() < 5) {
+          ESP_LOGW(TAG, "Setting value too short, discarding");
+          break;
+        }
         ESP_LOGD(TAG, "Address %d-%d has options: %s [%02x.%s]", data[3], data[4], binary_indices(data[2]).c_str(),
                  type, format_hex_pretty(data).c_str());
         break;
       }
       case SETTING_VALUE2: {
+        if (data.size() < 4) {
+          ESP_LOGW(TAG, "Setting value 2 too short, discarding");
+          break;
+        }
         // CrowAlarmPanelKeypad keypad = this->find_keypad_(data[0]);
         ESP_LOGD(TAG, "Address %d-%d has value %d [%02x.%s]", data[2], data[3], data[1], type,
                  format_hex_pretty(data).c_str());
         break;
       }
       case SETTING_VALUE3: {
+        if (data.size() < 5) {
+          ESP_LOGW(TAG, "Setting value 3 too short, discarding");
+          break;
+        }
         // CrowAlarmPanelKeypad keypad = this->find_keypad_(data[0]);
         ESP_LOGD(TAG, "Address %d-%d has value %d [%02x.%s]", data[3], data[4], (data[1] << 8) | data[2], type,
                  format_hex_pretty(data).c_str());
         break;
       }
       case MEMORY_EVENT: {
+        if (data.size() < 2) {
+          ESP_LOGW(TAG, "Memory event too short, discarding");
+          break;
+        }
         // CrowAlarmPanelKeypad keypad = this->find_keypad_(data[0]);
         ESP_LOGD(TAG, "Memory event #%d ", data[1]);
         break;
@@ -277,7 +345,33 @@ void CrowAlarmPanel::loop() {
       ESP_LOGD(TAG, "Sending queued keypress: %s (%d)", KEYS[key], key);
       this->keypress(key);
       this->last_keypress_sent_ms_ = now_ms;
+      
+      // Clear disarm flag when ENTER is sent during a disarm operation
+      if (key == KEY_ENTER && this->disarm_in_progress_) {
+        this->disarm_in_progress_ = false;
+        this->arm_in_progress_ = false;  // Also clear arm flag since disarm completes any arm operation
+        ESP_LOGD(TAG, "Disarm sequence completed, clearing disarm and arm flags");
+      }
+      
+      // Clear arm flag when ARM or STAY keys are sent during an arm operation
+      if ((key == KEY_ARM || key == KEY_STAY) && this->arm_in_progress_) {
+        this->arm_in_progress_ = false;
+        this->disarm_in_progress_ = false;  // Also clear disarm flag since arm completes any disarm operation
+        ESP_LOGD(TAG, "Arm sequence completed, clearing arm and disarm flags");
+      }
     }
+  }
+  
+  // Timeout protection: Clear disarm flag if it's been too long (30 seconds)
+  if (this->disarm_in_progress_ && (millis() - this->disarm_started_ms_ > 30000)) {
+    ESP_LOGW(TAG, "Disarm timeout reached, clearing disarm flag");
+    this->disarm_in_progress_ = false;
+  }
+  
+  // Timeout protection: Clear arm flag if it's been too long (30 seconds)
+  if (this->arm_in_progress_ && (millis() - this->arm_started_ms_ > 30000)) {
+    ESP_LOGW(TAG, "Arm timeout reached, clearing arm flag");
+    this->arm_in_progress_ = false;
   }
 }
 
@@ -309,13 +403,24 @@ bool CrowAlarmPanel::is_bus_idle_() {
   return true;
 }
 
-void CrowAlarmPanel::wait_for_clock_edge_(bool wait_for_state) {
-  // Wait for clock to reach desired state
+/**
+ * @brief Wait for the clock pin to reach the desired state, with timeout.
+ * @return true if the desired state was reached, false on timeout.
+ */
+bool CrowAlarmPanel::wait_for_clock_edge_(bool wait_for_state, uint32_t timeout_us) {
+  const uint32_t start = micros();
   while (this->clock_pin_->digital_read() != wait_for_state) {
+    if (micros() - start >= timeout_us) {
+      return false;
+    }
     delayMicroseconds(10);  // Yield to watchdog/WiFi
   }
+  return true;
 }
 
+/**
+ * @brief Send a packet over the Crow alarm panel bus, blocking until complete.
+ */
 void IRAM_ATTR CrowAlarmPanel::send_packet_blocking_(const std::vector<uint8_t> &packet) {
   InterruptLock lock;
 
@@ -329,9 +434,13 @@ void IRAM_ATTR CrowAlarmPanel::send_packet_blocking_(const std::vector<uint8_t> 
   }
 
   // Wait for a full clock cycle to hopefully synchronize better
-    this->wait_for_clock_edge_(HIGH);
-    this->wait_for_clock_edge_(LOW);
-    this->wait_for_clock_edge_(HIGH);
+  if (!this->wait_for_clock_edge_(HIGH, CrowAlarmPanelStore::TX_START_TIMEOUT_US) ||
+      !this->wait_for_clock_edge_(LOW, CrowAlarmPanelStore::TX_START_TIMEOUT_US) ||
+      !this->wait_for_clock_edge_(HIGH, CrowAlarmPanelStore::TX_START_TIMEOUT_US)) {
+    // Release data pin back to input (idle high via panel pull-up) before bailing
+    this->data_pin_->pin_mode(gpio::FLAG_INPUT);
+    return;
+  }
 
   // Transmit each bit on clock falling edge
   for (uint16_t i = 0; i < bit_count; i++) {
@@ -345,10 +454,14 @@ void IRAM_ATTR CrowAlarmPanel::send_packet_blocking_(const std::vector<uint8_t> 
     }
 
     // Wait for falling edge to ensure the panel has sampled the bit
-    this->wait_for_clock_edge_(LOW);
+    if (!this->wait_for_clock_edge_(LOW, CrowAlarmPanelStore::TX_BIT_TIMEOUT_US)) {
+      break;
+    }
 
     // Wait for rising edge before next bit. This prevents the line from releasing high too early
-    this->wait_for_clock_edge_(HIGH);
+    if (!this->wait_for_clock_edge_(HIGH, CrowAlarmPanelStore::TX_BIT_TIMEOUT_US)) {
+      break;
+    }
   }
 
   // Release data pin back to input (idle high via panel pull-up)
@@ -359,17 +472,44 @@ void IRAM_ATTR CrowAlarmPanel::send_packet_blocking_(const std::vector<uint8_t> 
 }
 
 void CrowAlarmPanel::arm_away() {
+  if (this->arm_in_progress_) {
+    ESP_LOGW(TAG, "Arm operation already in progress, ignoring new arm request");
+    return;
+  }
+  
   ESP_LOGD(TAG, "Arm away");
+  this->arm_in_progress_ = true;
+  this->arm_started_ms_ = millis();
   this->keypress(KEY_ARM);
 }
 
 void CrowAlarmPanel::arm_stay() {
+  if (this->arm_in_progress_) {
+    ESP_LOGW(TAG, "Arm operation already in progress, ignoring new arm request");
+    return;
+  }
+  
   ESP_LOGD(TAG, "Arm stay");
+  this->arm_in_progress_ = true;
+  this->arm_started_ms_ = millis();
   this->keypress(KEY_STAY);
 }
 
 void CrowAlarmPanel::disarm(const std::string &code) {
+  if (!this->is_armed()) {
+    ESP_LOGW(TAG, "Cannot disarm - alarm is not armed (current state: %s)", 
+             this->armed_state_ ? this->armed_state_->state.c_str() : "unknown");
+    return;
+  }
+  
+  if (this->disarm_in_progress_) {
+    ESP_LOGW(TAG, "Disarm already in progress, ignoring new disarm request");
+    return;
+  }
+  
   ESP_LOGD(TAG, "Disarm with code (queued)");
+  this->disarm_in_progress_ = true;
+  this->disarm_started_ms_ = millis();
   for (char c : code) {
     if (c >= '0' && c <= '9') {
       this->keypress_queue_.push_back(c - '0');
