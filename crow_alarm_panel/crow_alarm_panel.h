@@ -32,6 +32,16 @@ static const uint8_t CURRENT_TIME = 0x54;
 static const uint8_t BOUNDARY = 0x7E;
 static const uint8_t KEYPRESS = 0xD1;
 static const uint8_t MEMORY_CLEAR = 0xD2;
+// static const uint8_t PACKET_COMPLETE_MARKER = 0x7F;
+static const uint8_t PACKET_COMPLETE_MARKER = 0xFE;
+
+// Testing these two based on logs from the keypad
+static const uint8_t KEYPRESS_ALT = 0xA1;
+static const uint8_t KEY_ENTER_ALT = 0x11;
+static const uint8_t KEY_ARM_ALT = 0x0D;
+static const uint8_t KEY_STAY_ALT = 0x0E;
+static const char *KEYS_ALT[18] = {"0", "1",     "2",      "3",       "4",   "5",    "6",      "7",       "8",
+                               "9", "PANIC", "ENTER", "CONTROL", "ARM", "STAY", "BYPASS", "PROGRAM", "ENTER"};
 
 // Keys 0 - 9 are 0-9
 static const uint8_t KEY_MEMORY = 11;
@@ -54,14 +64,6 @@ struct CrowAlarmPanelMessage {
   uint8_t data_len;
 };
 
-// Transmission state machine states
-enum class TxState : uint8_t {
-  IDLE,          // No transmission pending
-  READY_TO_TX,   // Bus idle, bit buffer prepared, waiting for first falling edge
-  TRANSMITTING,  // Actively outputting bits on each falling edge
-  COMPLETE       // All bits sent, ready for cleanup
-};
-
 struct CrowAlarmPanelKeypad {
   std::string name;
   uint8_t address;
@@ -81,23 +83,16 @@ class CrowAlarmPanelStore {
   uint8_t buffer2[BUFFER_LENGTH];
   uint8_t data_length;
 
-  // Transmission state machine fields
-  bool tx_buffer[200];              // Bit buffer (max ~20 bytes = 160 bits)
-  uint16_t tx_buffer_length{0};     // Total bits to send
-  uint16_t tx_buffer_index{0};      // Current bit position
-  TxState tx_state{TxState::IDLE};  // Current state
-  uint32_t tx_start_time_us{0};     // When READY_TO_TX entered
-  uint32_t tx_last_bit_time_us{0};  // Last bit sent timestamp
-
   bool data{false};
   uint32_t last_clock_time_{0};             // Track last clock edge
   uint32_t last_transmission_time_{0};      // Track last TX completion
   uint32_t prev_falling_edge_time_us_{0};   // Track last falling edge for glitch filtering
 
+  bool inside_{false};
+
  protected:
   ISRInternalGPIOPin clock_pin_;
   ISRInternalGPIOPin data_pin_;
-  bool inside_{false};
   uint8_t num_bits_;
   uint8_t boundary_buffer_;
 
@@ -192,10 +187,11 @@ class CrowAlarmPanel : public Component {
   CrowAlarmPanelKeypad find_keypad_(uint8_t address);
   bool is_bus_idle_();
 
-  // Transmission helper methods
-  void prepare_transmission_();
-  void complete_transmission_();
-  void abort_transmission_();
+  // Transmission methods (blocking)
+  void send_packet_blocking_(const std::vector<uint8_t> &packet);
+  void wait_for_clock_edge_(bool wait_for_high);
+  std::vector<uint8_t> keypress_queue_;
+  uint32_t last_keypress_sent_ms_{0};
 
   CrowAlarmPanelStore store_;
   InternalGPIOPin *clock_pin_;
@@ -207,8 +203,6 @@ class CrowAlarmPanel : public Component {
   std::vector<CrowAlarmPanelZone> zones_;
   std::vector<CrowAlarmPanelKeypad> keypads_;
   std::vector<CrowAlarmPanelOutput> outputs_;
-
-  std::vector<std::vector<uint8_t>> tx_buffer_;
 };
 
 }  // namespace crow_alarm_panel

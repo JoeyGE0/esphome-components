@@ -2,6 +2,9 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
+#define HIGH 1
+#define LOW 0
+
 namespace esphome {
 namespace crow_alarm_panel {
 
@@ -38,34 +41,6 @@ void IRAM_ATTR HOT CrowAlarmPanelStore::interrupt(CrowAlarmPanelStore *arg) {
   }
   arg->prev_falling_edge_time_us_ = now;
 
-  // Priority: if we're currently receiving data, skip transmission entirely
-  // The data flag indicates we're in the middle of receiving a message
-  // The inside_ flag indicates we're inside a boundary (receiving packet)
-  // We're receiving - skip transmission logic and handle receive below
-  if (!arg->data && !arg->inside_) {
-    if (arg->tx_state == TxState::READY_TO_TX) {
-      // First falling edge - start transmission
-      arg->tx_state = TxState::TRANSMITTING;
-      arg->tx_last_bit_time_us = now;
-      arg->data_pin_.digital_write(arg->tx_buffer[0]);
-      arg->tx_buffer_index = 1;
-      return;
-    }
-
-    if (arg->tx_state == TxState::TRANSMITTING) {
-      arg->tx_last_bit_time_us = now;
-      if (arg->tx_buffer_index < arg->tx_buffer_length) {
-        // Send next bit
-        arg->data_pin_.digital_write(arg->tx_buffer[arg->tx_buffer_index++]);
-        return;
-      } else {
-        // Transmission complete
-        arg->tx_state = TxState::COMPLETE;
-        return;
-      }
-    }
-  }
-
   // Handle receive mode
   bool data_bit = arg->data_pin_.digital_read();
 
@@ -99,6 +74,7 @@ void IRAM_ATTR HOT CrowAlarmPanelStore::interrupt(CrowAlarmPanelStore *arg) {
       arg->num_bits_ = 0;
       memset(arg->buffer, 0, BUFFER_LENGTH);
       arg->boundary_buffer_ = 0;
+      arg->data = false;  // clear data flag on overflow
     }
   }
 
@@ -110,15 +86,25 @@ void IRAM_ATTR HOT CrowAlarmPanelStore::interrupt(CrowAlarmPanelStore *arg) {
 
 void CrowAlarmPanel::setup() {
   this->store_.setup(this->clock_pin_, this->data_pin_);
+
+  // Ensure our configured keypad address is present for logging/lookup
+  bool have_self = false;
+  for (const auto &kp : this->keypads_) {
+    if (kp.address == this->keypad_address_) {
+      have_self = true;
+      break;
+    }
+  }
+  if (!have_self) {
+    this->keypads_.push_back(CrowAlarmPanelKeypad{
+        .name = "Virtual Keypad",
+        .address = this->keypad_address_,
+    });
+  }
+
   if (this->armed_state_ != nullptr) {
     this->armed_state_->publish_state("disarmed");
   }
-  // this->set_interval("crow_alarm_panel_update", 1000, [this]() {
-  //   uint32_t now = millis();
-  //   ESP_LOGD(TAG, "%d clocks in %dms", this->store_.clock_count, now - this->last_update_);
-  //   this->last_update_ = now;
-  //   this->store_.clock_count = 0;
-  // });
 };
 
 void CrowAlarmPanel::dump_config() {
@@ -146,7 +132,7 @@ void CrowAlarmPanel::loop() {
       data.insert(data.begin(), this->store_.buffer2 + 1, this->store_.buffer2 + this->store_.data_length - 1);
       memset(this->store_.buffer2, 0, BUFFER_LENGTH);
       this->store_.data_length = 0;
-    }  // Lock automatically released
+    }
 
     ESP_LOGD(TAG, "Received data: [%02x.%s]", type, format_hex_pretty(data).c_str());
 
@@ -211,10 +197,10 @@ void CrowAlarmPanel::loop() {
         }
         break;
       }
-      case KEYPRESS: {
+      case KEYPRESS_ALT: {
         uint8_t key = data[1];
         CrowAlarmPanelKeypad keypad = this->find_keypad_(data[0]);
-        ESP_LOGD(TAG, "Key %s (%d) pressed on %s [%02x.%s]", KEYS[key], key, keypad.name.c_str(), type,
+        ESP_LOGD(TAG, "Key %s (%d) pressed on %s [%02x.%s]", KEYS_ALT[key], key, keypad.name.c_str(), type,
                  format_hex_pretty(data).c_str());
         break;
       }
@@ -282,197 +268,147 @@ void CrowAlarmPanel::loop() {
     this->on_message_trigger_->trigger(type, data);
   }
 
-  // Handle transmission state machine
-  switch (this->store_.tx_state) {
-    case TxState::IDLE:
-      // Check if we can start a new transmission
-      if (!this->tx_buffer_.empty()) {
-        if (this->is_bus_idle_()) {
-          ESP_LOGI(TAG, "Bus idle detected - preparing transmission");
-          this->prepare_transmission_();
-        } else {
-          // Only log occasionally to avoid spam
-          static uint32_t last_log = 0;
-          if (millis() - last_log > 1000) {
-            ESP_LOGD(TAG, "TX queue has %d packet(s) but bus not idle", this->tx_buffer_.size());
-            last_log = millis();
-          }
-        }
-      }
-      break;
-
-    case TxState::READY_TO_TX:
-      // Check for start timeout
-      if (micros() - this->store_.tx_start_time_us > CrowAlarmPanelStore::TX_START_TIMEOUT_US) {
-        ESP_LOGW(TAG, "TX start timeout - no clock edge after %dus",
-                 micros() - this->store_.tx_start_time_us);
-        this->abort_transmission_();
-      }
-      break;
-
-    case TxState::TRANSMITTING:
-      // Check for stuck transmission
-      if (micros() - this->store_.tx_last_bit_time_us > CrowAlarmPanelStore::TX_BIT_TIMEOUT_US) {
-        ESP_LOGW(TAG, "TX stuck - no clock edges (bit %d/%d)",
-                 this->store_.tx_buffer_index, this->store_.tx_buffer_length);
-        this->abort_transmission_();
-      }
-      break;
-
-    case TxState::COMPLETE:
-      this->complete_transmission_();
-      break;
+  // Send queued keypresses without blocking the caller that enqueued them
+  if (!this->keypress_queue_.empty() && this->is_bus_idle_()) {
+    const uint32_t now_ms = millis();
+    if (now_ms - this->last_keypress_sent_ms_ >= 500) {
+      uint8_t key = this->keypress_queue_.front();
+      this->keypress_queue_.erase(this->keypress_queue_.begin());
+      ESP_LOGD(TAG, "Sending queued keypress: %s (%d)", KEYS_ALT[key], key);
+      this->keypress(key);
+      this->last_keypress_sent_ms_ = now_ms;
+    }
   }
 }
 
 bool CrowAlarmPanel::is_bus_idle_() {
-  // Check basic data flag
-  if (this->store_.data) {
-    ESP_LOGV(TAG, "Bus not idle: data flag is set");
+  // Check if we're currently inside a message
+  if (this->store_.inside_) {
+    ESP_LOGV(TAG, "Bus not idle: inside message boundary");
     return false;
   }
 
-  // Check time since last clock activity
-  uint32_t now_us = micros();
-  uint32_t time_since_clock = now_us - this->store_.last_clock_time_;
-
-  if (time_since_clock < CrowAlarmPanelStore::BUS_IDLE_TIMEOUT_US) {
-    ESP_LOGV(TAG, "Bus not idle: only %uus since last clock edge (need %uus)",
-             time_since_clock, CrowAlarmPanelStore::BUS_IDLE_TIMEOUT_US);
+  // Check if data line is pulled low (someone is transmitting)
+  // Data line pulls high when idle, so low means active transmission
+  if (!this->data_pin_->digital_read()) {
+    ESP_LOGV(TAG, "Bus not idle: data line is low (active transmission)");
     return false;
   }
 
-  // Check minimum interval since last transmission
+  // Check minimum interval since last transmission (anti-spam)
   uint32_t now_ms = millis();
   uint32_t time_since_tx = now_ms - this->store_.last_transmission_time_;
 
   if (time_since_tx < CrowAlarmPanelStore::MIN_TX_INTERVAL_MS) {
-    ESP_LOGV(TAG, "Bus not idle: only %ums since last TX (need %ums)",
-             time_since_tx, CrowAlarmPanelStore::MIN_TX_INTERVAL_MS);
+    ESP_LOGV(TAG, "Bus not idle: only %ums since last TX (need %ums)", time_since_tx,
+             CrowAlarmPanelStore::MIN_TX_INTERVAL_MS);
     return false;
   }
 
-  ESP_LOGV(TAG, "Bus is idle: data_flag=0, %uus since clock, %ums since TX",
-           time_since_clock, time_since_tx);
+  ESP_LOGV(TAG, "Bus is idle: not inside message, data line high, %ums since last TX", time_since_tx);
   return true;
 }
 
+void CrowAlarmPanel::wait_for_clock_edge_(bool wait_for_state) {
+  // Wait for clock to reach desired state
+  while (this->clock_pin_->digital_read() != wait_for_state) {
+    delayMicroseconds(10);  // Yield to watchdog/WiFi
+  }
+}
+
+void IRAM_ATTR CrowAlarmPanel::send_packet_blocking_(const std::vector<uint8_t> &packet) {
+  InterruptLock lock;
+
+  // Convert bytes to bits (LSB first)
+  bool bits[200];
+  uint16_t bit_count = 0;
+  for (uint8_t byte : packet) {
+    for (uint8_t j = 0; j < 8; j++) {
+      bits[bit_count++] = (byte >> j) & 1;
+    }
+  }
+
+  // Wait for a full clock cycle to hopefully synchronize better
+    this->wait_for_clock_edge_(HIGH);
+    this->wait_for_clock_edge_(LOW);
+    this->wait_for_clock_edge_(HIGH);
+
+  // Transmit each bit on clock falling edge
+  for (uint16_t i = 0; i < bit_count; i++) {
+    // Drive the next bit before the falling edge so the panel samples the correct value.
+    // Use open-drain style: pull low for 0, release (input) for 1 to avoid fighting the panel.
+    if (bits[i]) {
+      this->data_pin_->pin_mode(gpio::FLAG_INPUT);  // release line for logic high
+    } else {
+      this->data_pin_->pin_mode(gpio::FLAG_OUTPUT);
+      this->data_pin_->digital_write(LOW);  // actively pull low for 0
+    }
+
+    // Wait for falling edge to ensure the panel has sampled the bit
+    this->wait_for_clock_edge_(LOW);
+
+    // Wait for rising edge before next bit. This prevents the line from releasing high too early
+    this->wait_for_clock_edge_(HIGH);
+  }
+
+  // Release data pin back to input (idle high via panel pull-up)
+  this->data_pin_->pin_mode(gpio::FLAG_INPUT);
+
+  // Track last transmission time
+  this->store_.last_transmission_time_ = millis();
+}
+
 void CrowAlarmPanel::arm_away() {
-  // Send ARM key via keypress
-  ESP_LOGI(TAG, "Arm away button pressed - sending ARM key (13)");
-  this->keypress(13);  // ARM key is index 13 in KEYS array
+  ESP_LOGD(TAG, "Arm away");
+  this->keypress(KEY_ARM_ALT);  // ARM key
 }
 
 void CrowAlarmPanel::arm_stay() {
-  // Send STAY key via keypress
-  ESP_LOGI(TAG, "Arm stay button pressed - sending STAY key (14)");
-  this->keypress(14);  // STAY key is index 14 in KEYS array
+  ESP_LOGD(TAG, "Arm stay");
+  this->keypress(KEY_STAY_ALT);  // STAY key
 }
 
 void CrowAlarmPanel::disarm(const std::string &code) {
-  if (code.empty()) {
-    ESP_LOGW(TAG, "Cannot disarm without code");
-    return;
-  }
-
-  ESP_LOGI(TAG, "Disarm button pressed - sending code: %s", code.c_str());
-
-  // Queue all digits - the transmission loop handles spacing
+  ESP_LOGI(TAG, "Disarm with code (queued)");
   for (char c : code) {
     if (c >= '0' && c <= '9') {
-      uint8_t key = c - '0';  // Keys 0-9 are indices 0-9
-      this->keypress(key);    // Just queue it, no delay
+      this->keypress_queue_.push_back(c - '0');
     }
   }
+  this->keypress_queue_.push_back(KEY_ENTER_ALT);
 }
 
 void CrowAlarmPanel::set_output(uint8_t output, bool state) {}
 
 void CrowAlarmPanel::send_packet(uint8_t type, const std::vector<uint8_t> &data) {
-  std::vector<uint8_t> to_send;
-  to_send.push_back(BOUNDARY);
-  to_send.push_back(type);
-  to_send.insert(to_send.end(), data.begin(), data.end());
-  to_send.push_back(BOUNDARY);
-  this->tx_buffer_.push_back(to_send);
-  ESP_LOGI(TAG, "Packet queued [type=%02x, size=%d bytes]: %s", type, to_send.size(),
-           format_hex_pretty(to_send).c_str());
-  ESP_LOGI(TAG, "TX queue now has %d packet(s)", this->tx_buffer_.size());
+  // Build packet with boundaries
+  std::vector<uint8_t> packet;
+  packet.push_back(BOUNDARY);  // Start boundary
+  packet.push_back(type);
+  packet.push_back(this->keypad_address_);
+  packet.insert(packet.end(), data.begin(), data.end());
+  packet.push_back(BOUNDARY);                // End boundary
+  packet.push_back(PACKET_COMPLETE_MARKER);  // Explicit end marker
+
+  // Check if bus is idle
+  while (!this->is_bus_idle_()) {
+    ESP_LOGI(TAG, "Waiting for bus to become idle before sending packet...");
+    delay(10); // Each packet takes around 30ms to fully send
+    yield();
+  }
+
+  ESP_LOGI(TAG, "Sending packet: [%s]", format_hex_pretty(packet).c_str());
+
+  // Send it (blocks until complete)
+  this->send_packet_blocking_(packet);
+
+  ESP_LOGI(TAG, "Packet sent");
 }
 
 void CrowAlarmPanel::keypress(uint8_t key) {
-  std::vector<uint8_t> data;
-  data.push_back(this->keypad_address_);
-  data.push_back(key);
-  ESP_LOGD(TAG, "Keypress: key=%d, keypad_address=%d", key, this->keypad_address_);
-  this->send_packet(KEYPRESS, data);
-}
-
-void CrowAlarmPanel::prepare_transmission_() {
-  InterruptLock lock;
-
-  ESP_LOGI(TAG, "=== PREPARE TRANSMISSION ===");
-
-  // Get next packet to send
-  std::vector<uint8_t> to_send = this->tx_buffer_[0];
-  this->tx_buffer_.erase(this->tx_buffer_.begin());
-
-  ESP_LOGI(TAG, "Packet bytes: %s", format_hex_pretty(to_send).c_str());
-
-  // Convert bytes to bit buffer (LSB first)
-  uint16_t bit_index = 0;
-  std::string debug_str;
-  for (uint8_t byte : to_send) {
-    for (uint8_t j = 0; j < 8; j++) {
-      this->store_.tx_buffer[bit_index++] = (byte & (1 << j)) ? true : false;
-      debug_str += (byte & (1 << j)) ? "1" : "0";
-    }
-    debug_str += " (";
-    debug_str += format_hex(&byte, 1);
-    debug_str += ") ";
-  }
-  this->store_.tx_buffer_length = bit_index;
-  this->store_.tx_buffer_index = 0;
-
-  ESP_LOGI(TAG, "Converted to %d bits: %s", bit_index, debug_str.c_str());
-
-  // Set up for transmission
-  this->store_.tx_start_time_us = micros();
-  this->data_pin_->pin_mode(gpio::FLAG_OUTPUT);
-  this->data_pin_->digital_write(false);  // Pull low for bus arbitration
-  this->store_.tx_state = TxState::READY_TO_TX;
-
-  ESP_LOGI(TAG, "State -> READY_TO_TX, data pin set to OUTPUT and LOW");
-  ESP_LOGI(TAG, "Waiting for first clock falling edge to begin transmission...");
-}
-
-void CrowAlarmPanel::complete_transmission_() {
-  InterruptLock lock;
-
-  ESP_LOGI(TAG, "=== TRANSMISSION COMPLETE ===");
-  ESP_LOGI(TAG, "Successfully sent %d bits", this->store_.tx_buffer_index);
-
-  // Release data pin
-  this->data_pin_->pin_mode(gpio::FLAG_INPUT);
-
-  // Update timing
-  this->store_.last_transmission_time_ = millis();
-  this->store_.tx_state = TxState::IDLE;
-
-  ESP_LOGI(TAG, "State -> IDLE, data pin released to INPUT");
-}
-
-void CrowAlarmPanel::abort_transmission_() {
-  InterruptLock lock;
-
-  ESP_LOGW(TAG, "=== TRANSMISSION ABORTED ===");
-  ESP_LOGW(TAG, "Aborted at bit %d/%d", this->store_.tx_buffer_index, this->store_.tx_buffer_length);
-
-  // Release data pin
-  this->data_pin_->pin_mode(gpio::FLAG_INPUT);
-  this->store_.tx_state = TxState::IDLE;
-
-  ESP_LOGW(TAG, "State -> IDLE, data pin released to INPUT");
+  ESP_LOGI(TAG, "Keypress: %s (%d)", KEYS_ALT[key], key);
+  std::vector<uint8_t> data = {key};
+  this->send_packet(KEYPRESS_ALT, data);
 }
 
 }  // namespace crow_alarm_panel
