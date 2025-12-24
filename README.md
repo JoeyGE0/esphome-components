@@ -4,15 +4,23 @@ ESPHome custom component for integrating Crow/Arrowhead alarm panels with Home A
 
 ## Features
 
-- **Zone Monitoring**: Binary sensors for motion detection and bypass status
-- **Armed State Detection**: Text sensor showing alarm state (armed_away, armed_stay, disarmed, etc.)
-- **Output Control**: Switches for controlling alarm panel outputs
-- **Keypress Simulation**: Send commands via the keypad bus
-- **Interrupt-Driven**: Efficient ISR-based serial communication
+- **Zone Monitoring**: Binary sensors for zone activity and bypass status
+- **Armed State**: Text sensor with arming/disarming states
+- **Keypad Bus Logging**: `on_message` trigger exposes raw bus frames
+- **Output State**: Switch entities reflect output states (read-only today)
+- **Keypress/Arm/Disarm Buttons**: Sends keypad keypress sequences to arm away/stay or disarm
+- **Interrupt-Driven**: ISR-based clocked serial decoding
+
+## Credits
+
+This repo builds on the work done by [jesserockz](https://github.com/jesserockz/esphome-components/tree/main/components/crow_alarm_panel). 
+I have added the transmission code, but the bulk of the work is thanks to them.
 
 ## Installation
 
 ### Method 1: External Components (Recommended)
+
+See [here](https://esphome.io/components/external_components/) for the full reference on external components
 
 Add to your ESPHome YAML configuration:
 
@@ -46,18 +54,26 @@ external_components:
 ```yaml
 crow_alarm_panel:
   id: alarm
-  clock_pin: GPIO18
-  data_pin: GPIO19
-  address: 8  # Your keypad address
+  clock_pin: 18
+  data_pin: 19
+  address: 0  # Your keypad address
 
-  keypads:
-    - name: "Front Keypad"
-      address: 4
+  keypads:               # Optional: label other keypads for logging
+    - name: "Main Keypad"
+      address: 0
 
-# Binary sensors for zones
+  # Optional: log every bus message
+  on_message:
+    - logger.log:
+        format: "%02x -  %s"
+        args: 
+        - "type"
+        - "format_hex_pretty(data).c_str()"
+
+# Zones
 binary_sensor:
   - platform: crow_alarm_panel
-    type: motion
+    type: zone
     zone: 1
     name: "Front Door"
 
@@ -72,31 +88,27 @@ text_sensor:
     type: armed_state
     name: "Alarm Status"
 
-# Switch for outputs
+# Output state (read-only; write not implemented)
 switch:
   - platform: crow_alarm_panel
     type: output
     output: 1
-    name: "Siren"
-```
+    name: "Siren (read only)"
 
-### Automation Actions (Coming Soon)
-
-Once arm/disarm commands are implemented, you'll be able to use:
-
-```yaml
+# Buttons for keypad-driven actions
 button:
-  - platform: template
+  - platform: crow_alarm_panel
+    type: arm_away
     name: "Arm Away"
-    on_press:
-      - crow_alarm_panel.arm_away: alarm
 
-  - platform: template
+  - platform: crow_alarm_panel
+    type: arm_stay
+    name: "Arm Stay"
+
+  - platform: crow_alarm_panel
+    type: disarm
     name: "Disarm"
-    on_press:
-      - crow_alarm_panel.disarm:
-          id: alarm
-          code: !secret alarm_code
+    code: !secret alarm_code
 ```
 
 ## Hardware Setup
@@ -105,16 +117,21 @@ button:
 
 Connect your ESP32 to the alarm panel keypad bus:
 
-- **Clock Pin (GPIO18)**: Connect to alarm panel clock line
-- **Data Pin (GPIO19)**: Connect to alarm panel data line
+- **Clock Pin (GPIO18)**: Connect to alarm panel clock line through a 5v <-> 3.3v level shifter
+- **Data Pin (GPIO19)**: Connect to alarm panel data line through the level shifter
 - **Ground**: Common ground between ESP32 and alarm panel
-- **Power**: Power ESP32 separately (do not power from alarm panel)
+- **Power**: The arrowhead esl panel uses 13v for its power line. You can use a buck converter to step this down to 5v to make it useable by the esp32.
 
 ### Recommended Hardware
 
 - ESP32 development board
-- Logic level converter (if alarm panel uses 12V logic)
-- Optocouplers for electrical isolation (recommended)
+- Bidirectional Logic level converter
+- Buck converter
+
+## Known Limitations
+
+- Output switches are read-only; `set_output` is not implemented yet.
+- Setting the address as a different value to the keypad causes the keypad to reset. Unsure why at this point.
 
 ## Protocol
 
@@ -136,50 +153,15 @@ This component decodes the proprietary Crow alarm panel serial protocol:
 | 0x15 | Keypad state (normal, installer, programming) |
 | 0x50 | Output state |
 | 0x54 | Current time/date |
-| 0xD1 | Keypress from physical keypad |
+| 0xA1 | Keypress from physical keypad |
 | 0xD2 | Memory cleared |
 
 ## Development
 
 ### Local Development Setup
 
-```bash
-git clone https://github.com/yourusername/esphome-crow-alarm.git
-cd esphome-crow-alarm
-```
-
-### Making Changes
-
-```bash
-# Make your changes
-git add .
-git commit -m "feat: Add new feature"
-git push
-```
-
-### Testing
-
-Use ESPHome's local component loading during development:
-
-```yaml
-external_components:
-  - source:
-      type: local
-      path: /path/to/esphome-crow-alarm
-    components: [ crow_alarm_panel ]
-```
-
-## Roadmap
-
-- [x] Zone monitoring
-- [x] Armed state detection
-- [x] Output control (read-only)
-- [x] Keypress event monitoring
-- [ ] Arm/disarm commands
-- [ ] Output control (write)
-- [ ] Zone bypass control
-- [ ] Time synchronization
-- [ ] Memory event log reading
+Follow the esphome development guide to set up a local environment. You can use this to test that your code compiles.
+I then set up the custom component on my regular esphome install via git and pulled it in that to test on a live device.
 
 ## Troubleshooting
 
@@ -196,49 +178,3 @@ If no messages are received from the alarm panel:
 - Verify wiring (clock and data pins)
 - Check ground connection
 - Ensure keypad address is correct
-- Monitor with logic analyzer to confirm bus activity
-
-### Bus Collisions
-
-If commands interfere with panel operation:
-- Increase `MIN_TX_INTERVAL_MS` in component
-- Check for proper bus idle detection
-- Verify only one device is transmitting at a time
-
-## License
-
-MIT License
-
-Copyright (c) 2024
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-## Credits
-
-Based on reverse engineering of Crow/Arrowhead alarm panel communication protocol.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'feat: Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
