@@ -110,6 +110,9 @@ void CrowAlarmPanel::setup() {
   if (this->armed_state_ != nullptr) {
     this->armed_state_->publish_state("disarmed");
   }
+  if (this->alarm_control_panel_ != nullptr) {
+    this->alarm_control_panel_->publish_state(alarm_control_panel::ACP_STATE_DISARMED);
+  }
 };
 
 void CrowAlarmPanel::dump_config() {
@@ -185,11 +188,18 @@ void CrowAlarmPanel::loop() {
             if (this->armed_state_ != nullptr && this->armed_state_->state != "arming") {
               this->armed_state_->publish_state("disarmed");  // Assume disarmed if motion detected in this byte
             }
+            if (this->alarm_control_panel_ != nullptr &&
+                this->alarm_control_panel_->get_state() != alarm_control_panel::ACP_STATE_ARMING) {
+              this->alarm_control_panel_->publish_state(alarm_control_panel::ACP_STATE_DISARMED);
+            }
             clear = false;
           }
           if (triggered_alarmed) {
             if (this->armed_state_ != nullptr) {
               this->armed_state_->publish_state("pending");
+            }
+            if (this->alarm_control_panel_ != nullptr) {
+              this->alarm_control_panel_->publish_state(alarm_control_panel::ACP_STATE_PENDING);
             }
             ESP_LOGD(TAG, "Alarm pending from zone %d", zone.zone);
             clear = false;
@@ -205,12 +215,21 @@ void CrowAlarmPanel::loop() {
           if (data[0] == 0x00 && data[1] == 0x01) {
             this->armed_state_->publish_state("arming");
             ESP_LOGD(TAG, "Arming [%02x.%s]", type, format_hex_pretty(data).c_str());
+            if (this->alarm_control_panel_ != nullptr) {
+              this->alarm_control_panel_->publish_state(alarm_control_panel::ACP_STATE_ARMING);
+            }
           } else if (data[0] == 0x01 && data[1] == 0x00) {
             this->armed_state_->publish_state("armed_away");
             ESP_LOGD(TAG, "Armed Away [%02x.%s]", type, format_hex_pretty(data).c_str());
+            if (this->alarm_control_panel_ != nullptr) {
+              this->alarm_control_panel_->publish_state(alarm_control_panel::ACP_STATE_ARMED_AWAY);
+            }
           } else if (data[0] == 0x00 && data[1] == 0x00) {
             this->armed_state_->publish_state("disarmed");
             ESP_LOGD(TAG, "Disarmed [%02x.%s]", type, format_hex_pretty(data).c_str());
+            if (this->alarm_control_panel_ != nullptr) {
+              this->alarm_control_panel_->publish_state(alarm_control_panel::ACP_STATE_DISARMED);
+            }
           } else {
             ESP_LOGD(TAG, "Armed state unknown [%02x.%s]", type, format_hex_pretty(data).c_str());
           }
@@ -551,5 +570,14 @@ void CrowAlarmPanel::keypress(uint8_t key) {
   this->send_packet(KEYPRESS, data);
 }
 
+bool CrowAlarmPanel::is_armed() const {
+  if (this->armed_state_ != nullptr) {
+    return this->armed_state_->state != "disarmed";
+  }
+  if (this->alarm_control_panel_ != nullptr) {
+    return this->alarm_control_panel_->get_state() != alarm_control_panel::ACP_STATE_DISARMED;
+  }
+  return false;
+}
 }  // namespace crow_alarm_panel
 }  // namespace esphome

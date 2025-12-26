@@ -3,9 +3,10 @@
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/text_sensor/text_sensor.h"
-#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
+#include "esphome/components/alarm_control_panel/alarm_control_panel.h"
+#include "esphome/components/alarm_control_panel/alarm_control_panel_state.h"
 
 #include <bitset>
 #include <vector>
@@ -167,13 +168,14 @@ class CrowAlarmPanel : public Component {
         .number = output_number,
     }));
   }
+  void register_alarm_control_panel(alarm_control_panel::AlarmControlPanel *acp) { this->alarm_control_panel_ = acp; }
 
   void arm_away();
   void arm_stay();
   void disarm(const std::string &code);
   bool is_disarm_in_progress() const { return this->disarm_in_progress_; }
   bool is_arm_in_progress() const { return this->arm_in_progress_; }
-  bool is_armed() const { return this->armed_state_ != nullptr && this->armed_state_->state != "disarmed"; }
+  bool is_armed() const;
 
   Trigger<uint8_t, std::vector<uint8_t>> *get_on_message_trigger() const { return this->on_message_trigger_; }
 
@@ -200,11 +202,35 @@ class CrowAlarmPanel : public Component {
   InternalGPIOPin *data_pin_;
   uint8_t keypad_address_;
   text_sensor::TextSensor *armed_state_;
+  alarm_control_panel::AlarmControlPanel *alarm_control_panel_{nullptr};
   Trigger<uint8_t, std::vector<uint8_t>> *on_message_trigger_{new Trigger<uint8_t, std::vector<uint8_t>>()};
 
   std::vector<CrowAlarmPanelZone> zones_;
   std::vector<CrowAlarmPanelKeypad> keypads_;
   std::vector<CrowAlarmPanelOutput> outputs_;
+};
+
+class CrowAlarmControlPanel : public alarm_control_panel::AlarmControlPanel, public Component {
+ public:
+  void dump_config() override;
+  uint32_t get_supported_features() const override {
+    return alarm_control_panel::ACP_FEAT_ARM_AWAY | alarm_control_panel::ACP_FEAT_ARM_HOME;
+  }
+  bool get_requires_code() const override { return this->requires_code_; }
+  bool get_requires_code_to_arm() const override { return this->requires_code_to_arm_; }
+
+  void set_parent(CrowAlarmPanel *parent) { this->parent_ = parent; }
+  void set_code(const std::string &code) { this->code_ = code; }
+  void set_requires_code(bool requires_code) { this->requires_code_ = requires_code; }
+  void set_requires_code_to_arm(bool requires_code_to_arm) { this->requires_code_to_arm_ = requires_code_to_arm; }
+
+ protected:
+  void control(const alarm_control_panel::AlarmControlPanelCall &call) override;
+
+  CrowAlarmPanel *parent_{nullptr};
+  std::string code_;
+  bool requires_code_{true};
+  bool requires_code_to_arm_{false};
 };
 
 }  // namespace crow_alarm_panel

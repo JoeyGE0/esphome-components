@@ -6,6 +6,7 @@ ESPHome custom component for integrating Crow/Arrowhead alarm panels with Home A
 
 - **Zone Monitoring**: Binary sensors for zone activity and bypass status
 - **Armed State**: Text sensor with arming/disarming states
+- **Full Alarm Control Panel Entity**: Expose a Home Assistant alarm panel while keeping button/switch entities
 - **Keypad Bus Logging**: `on_message` trigger exposes raw bus frames
 - **Output State**: Switch entities reflect output states (read-only today)
 - **Keypress/Arm/Disarm Buttons**: Sends keypad keypress sequences to arm away/stay or disarm
@@ -87,6 +88,14 @@ text_sensor:
   - platform: crow_alarm_panel
     type: armed_state
     name: "Alarm Status"
+
+# Full alarm control panel entity (optional)
+alarm_control_panel:
+  - platform: crow_alarm_panel
+    name: "Crow Alarm"
+    code: !secret alarm_code        # Optional: default disarm code
+    requires_code_to_arm: false     # Optional: set true if your panel needs code to arm
+# Buttons, switches, and sensors from above can still be used alongside the full panel entity.
 
 # Output state (read-only; write not implemented)
 switch:

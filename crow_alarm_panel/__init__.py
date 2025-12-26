@@ -1,7 +1,7 @@
 from esphome import pins, automation
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import text_sensor, switch
+from esphome.components import text_sensor, switch, alarm_control_panel as acp
 from esphome.const import (
     CONF_ADDRESS,
     CONF_ID,
@@ -11,7 +11,7 @@ from esphome.const import (
     CONF_OUTPUTS,
 )
 
-AUTO_LOAD = ["binary_sensor", "text_sensor", "switch", "button"]
+AUTO_LOAD = ["binary_sensor", "text_sensor", "switch", "button", "alarm_control_panel"]
 MULTI_CONF = True
 
 CONF_ARMED_STATE = "armed_state"
@@ -23,6 +23,9 @@ CONF_ON_MESSAGE = "on_message"
 crow_alarm_panel_ns = cg.esphome_ns.namespace("crow_alarm_panel")
 
 CrowAlarmPanel = crow_alarm_panel_ns.class_("CrowAlarmPanel", cg.Component)
+CrowAlarmControlPanel = crow_alarm_panel_ns.class_(
+    "CrowAlarmControlPanel", acp.AlarmControlPanel, cg.Component
+)
 
 CONFIG_SCHEMA = cv.Schema(
     {
