@@ -26,5 +26,4 @@ def to_code(config):
 
     yield text_sensor.register_text_sensor(var, config)
 
-    if config[CONF_TYPE] == "armed_state":
-        cg.add(paren.register_armed_state(var))
+    cg.add(paren.register_armed_state(var))
