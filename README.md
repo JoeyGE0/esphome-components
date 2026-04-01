@@ -6,7 +6,8 @@ ESPHome custom component for integrating Crow/Arrowhead alarm panels with Home A
 
 - **Zone Monitoring**: Binary sensors for zone activity and bypass status
 - **Armed State**: Text sensor with arming/disarming states
-- **Panel Info**: Text and binary sensors for panel ready, hardware and firmware version, and time/date.
+- **Panel Ready**: Binary sensor for panel ready status
+- **Panel Info**: Hardware, firmware, panel clock, and suspected tail are added automatically
 - **Full Alarm Control Panel Entity**: Expose a Home Assistant alarm panel while keeping button/switch entities
 - **Keypad Bus Logging**: `on_message` trigger exposes raw bus frames
 - **Output State**: Switch entities reflect output states (read-only today)
@@ -72,7 +73,11 @@ crow_alarm_panel:
         - "type"
         - "format_hex_pretty(data).c_str()"
 
-# Zones
+text_sensor:
+  - platform: crow_alarm_panel
+    type: armed_state
+    name: "Alarm Status"
+
 binary_sensor:
   - platform: crow_alarm_panel
     type: zone
@@ -84,6 +89,9 @@ binary_sensor:
     zone: 1
     name: "Front Door Bypassed"
 
+  - platform: crow_alarm_panel
+    type: panel_ready
+    name: "Panel Ready"
 
 # Full alarm control panel entity (optional)
 alarm_control_panel:
@@ -158,7 +166,7 @@ This component decodes the proprietary Crow alarm panel serial protocol:
 | 0x14 | Keypad command (beep commands) |
 | 0x15 | Keypad state (normal, installer, programming) |
 | 0x50 | Output state |
-| 0x23 | Panel info (hardware/firmware + optional tail; legacy temp guess) |
+| 0x23 | Panel info (hardware/firmware + unknown (temp?) |
 | 0x54 | Current time/date |
 | 0xA1 | Keypress from physical keypad |
 | 0xD2 | Memory cleared |
