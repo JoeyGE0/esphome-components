@@ -2,9 +2,6 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
-#define HIGH 1
-#define LOW 0
-
 namespace esphome {
 namespace crow_alarm_panel {
 
