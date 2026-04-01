@@ -11,6 +11,7 @@ BinarySensor = binary_sensor_ns.class_("BinarySensor", cg.EntityBase)
 
 CONF_ZONE = "zone"
 CONF_BYPASS = "bypass"
+CONF_PANEL_READY = "panel_ready"
 
 ZONE_SCHEMA = binary_sensor.binary_sensor_schema().extend(
     {
@@ -20,10 +21,18 @@ ZONE_SCHEMA = binary_sensor.binary_sensor_schema().extend(
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
+PANEL_READY_SCHEMA = binary_sensor.binary_sensor_schema().extend(
+    {
+        cv.GenerateID(): cv.declare_id(BinarySensor),
+        cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
+    }
+).extend(cv.COMPONENT_SCHEMA)
+
 CONFIG_SCHEMA = cv.typed_schema(
     {
         CONF_ZONE: ZONE_SCHEMA,
         CONF_BYPASS: ZONE_SCHEMA,
+        CONF_PANEL_READY: PANEL_READY_SCHEMA,
     }
 )
 
@@ -39,3 +48,5 @@ def to_code(config):
         cg.add(paren.register_zone(var, config[CONF_ZONE]))
     elif type == "bypass":
         cg.add(paren.register_zone_bypass(var, config[CONF_ZONE]))
+    elif type == CONF_PANEL_READY:
+        cg.add(paren.register_panel_ready(var))
