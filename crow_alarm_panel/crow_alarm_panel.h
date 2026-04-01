@@ -14,8 +14,8 @@
 namespace esphome {
 namespace crow_alarm_panel {
 
-static const uint8_t UNKNOWN = 0x10;
-static const uint8_t UNKNOWN2 = 0x20;
+static const uint8_t PANEL_READY = 0x10;  // Status / ready (payload byte 2: C1/C0/60)
+static const uint8_t UNKNOWN2 = 0x20;     // Unconfirmed, may be for AC Fail or something else (will test this further)
 
 static const uint8_t ARMED_STATE = 0x11;
 static const uint8_t ZONE_STATE = 0x12;
@@ -30,7 +30,8 @@ static const uint8_t MEMORY_EVENT = 0x20;
 
 static const uint8_t OUTPUT_STATE = 0x50;
 static const uint8_t CURRENT_TIME = 0x54;
-static const uint8_t CURRENT_TEMP = 0x23; // Unconfirmed, this is just my suspicion based on observed data
+// 0x23: bytes 1-2 BE16 → hardware revision (matches observed panels). Bytes 3-4 as firmware x.y is a guess, not protocol-confirmed. b0 + tail unknown; upstream once guessed temperature — also unverified.
+static const uint8_t PANEL_INFO = 0x23;
 static const uint8_t BOUNDARY = 0x7E;
 // static const uint8_t KEYPRESS = 0xD1; // This is from upstream, but doesn't get sent by arrowhead panels that I can see
 static const uint8_t KEYPRESS = 0xA1;
@@ -162,6 +163,13 @@ class CrowAlarmPanel : public Component {
   }
 
   void register_armed_state(text_sensor::TextSensor *armed_state_sensor) { this->armed_state_ = armed_state_sensor; }
+  void register_panel_ready(binary_sensor::BinarySensor *sensor) { this->panel_ready_ = sensor; }
+  void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
+  void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
+  void register_panel_time(text_sensor::TextSensor *sensor) { this->panel_time_ = sensor; }
+  void register_panel_date(text_sensor::TextSensor *sensor) { this->panel_date_ = sensor; }
+  void register_panel_year(text_sensor::TextSensor *sensor) { this->panel_year_ = sensor; }
+  void register_suspected_temperature(text_sensor::TextSensor *sensor) { this->suspected_temperature_ = sensor; }
   void register_output_switch(switch_::Switch *output_switch, uint8_t output_number) {
     this->outputs_.push_back(std::move(CrowAlarmPanelOutput{
         .the_switch = output_switch,
@@ -202,7 +210,21 @@ class CrowAlarmPanel : public Component {
   InternalGPIOPin *data_pin_;
   uint8_t keypad_address_;
   text_sensor::TextSensor *armed_state_;
-  alarm_control_panel::AlarmControlPanel *alarm_control_panel_{nullptr};
+  binary_sensor::BinarySensor *panel_ready_;
+  text_sensor::TextSensor *hardware_version_;
+  text_sensor::TextSensor *firmware_version_;
+  text_sensor::TextSensor *panel_time_;
+  text_sensor::TextSensor *panel_date_;
+  text_sensor::TextSensor *panel_year_;
+  text_sensor::TextSensor *suspected_temperature_;
+  bool clock_time_valid_{false};
+  uint8_t pt_h_{0};
+  uint8_t pt_m_{0};
+  uint8_t pt_s_{0};
+  int pt_year_{0};
+  int pt_month_{0};
+  int pt_day_{0};
+  alarm_control_panel::AlarmControlPanel *alarm_control_panel_;
   Trigger<uint8_t, std::vector<uint8_t>> *on_message_trigger_{new Trigger<uint8_t, std::vector<uint8_t>>()};
 
   std::vector<CrowAlarmPanelZone> zones_;
@@ -227,7 +249,7 @@ class CrowAlarmControlPanel : public alarm_control_panel::AlarmControlPanel, pub
  protected:
   void control(const alarm_control_panel::AlarmControlPanelCall &call) override;
 
-  CrowAlarmPanel *parent_{nullptr};
+  CrowAlarmPanel *parent_;
   std::string code_;
   bool requires_code_{true};
   bool requires_code_to_arm_{false};
