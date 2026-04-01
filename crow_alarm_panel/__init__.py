@@ -64,9 +64,7 @@ async def _register_diagnostic_text_sensor(config, parent_id, suffix: str, title
             CONF_NAME: _default_entity_name(config, title),
         }
     )
-    sens = await text_sensor_comp.new_text_sensor(sens_cfg)
-    await cg.register_component(sens, sens_cfg)
-    return sens
+    return await text_sensor_comp.new_text_sensor(sens_cfg)
 
 
 async def to_code(config):
