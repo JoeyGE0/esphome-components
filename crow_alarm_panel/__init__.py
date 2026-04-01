@@ -3,6 +3,7 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 import esphome.components.text_sensor as text_sensor_comp
 from esphome.components import alarm_control_panel as acp
+from esphome.core import ID
 from esphome.const import (
     CONF_ADDRESS,
     CONF_ID,
@@ -52,9 +53,14 @@ def _default_entity_name(config, title: str) -> str:
 
 async def _register_diagnostic_text_sensor(config, parent_id, suffix: str, title: str):
     sch = text_sensor_comp.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC)
+    child_id = ID(
+        f"{parent_id.id}_{suffix}",
+        is_declaration=True,
+        type=text_sensor_comp.TextSensor,
+    )
     sens_cfg = sch(
         {
-            CONF_ID: parent_id.extend(suffix, is_declaration=True),
+            CONF_ID: child_id,
             CONF_NAME: _default_entity_name(config, title),
         }
     )
