@@ -15,7 +15,7 @@ namespace esphome {
 namespace crow_alarm_panel {
 
 // 0x10: panel status. panel_ready uses payload byte2 (C1=ready, C0/60=not ready).
-// mains_power: same opcode; fault on 00.03.C2|C3 or 00.(01|02).C3; clear on 00.00.C0|C1.
+// mains_power: same opcode; fault on 00.(02|03).C2|C3; clear on 00.00.C0|C1.
 static const uint8_t PANEL_READY = 0x10;
 
 static const uint8_t ARMED_STATE = 0x11;
@@ -165,7 +165,7 @@ class CrowAlarmPanel : public Component {
 
   void register_armed_state(text_sensor::TextSensor *armed_state_sensor) { this->armed_state_ = armed_state_sensor; }
   void register_panel_ready(binary_sensor::BinarySensor *sensor) { this->panel_ready_ = sensor; }
-  /// Mains fault when 0x10 matches 00.03.C2|C3 or 00.(01|02).C3; clears on 00.00.C0|C1.
+  /// Mains fault when 0x10 matches 00.(02|03).C2|C3; clears on 00.00.C0|C1.
   void register_mains_power(binary_sensor::BinarySensor *sensor) { this->mains_power_ = sensor; }
   void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
