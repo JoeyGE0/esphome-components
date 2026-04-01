@@ -167,6 +167,8 @@ class CrowAlarmPanel : public Component {
   void register_panel_ready(binary_sensor::BinarySensor *sensor) { this->panel_ready_ = sensor; }
   /// Mains fault when 0x10 matches 00.(02|03).C2|C3; clears on 00.00.C0|C1.
   void register_mains_power(binary_sensor::BinarySensor *sensor) { this->mains_power_ = sensor; }
+  /// Experimental battery warning from 0x10 warning-shaped frames (00.(01|02).C3).
+  void register_battery_state_experimental(binary_sensor::BinarySensor *sensor) { this->battery_state_experimental_ = sensor; }
   void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
   void register_panel_time(text_sensor::TextSensor *sensor) { this->panel_time_ = sensor; }
@@ -215,6 +217,7 @@ class CrowAlarmPanel : public Component {
   text_sensor::TextSensor *armed_state_;
   binary_sensor::BinarySensor *panel_ready_;
   binary_sensor::BinarySensor *mains_power_{nullptr};
+  binary_sensor::BinarySensor *battery_state_experimental_{nullptr};
   text_sensor::TextSensor *hardware_version_;
   text_sensor::TextSensor *firmware_version_;
   text_sensor::TextSensor *panel_time_;
