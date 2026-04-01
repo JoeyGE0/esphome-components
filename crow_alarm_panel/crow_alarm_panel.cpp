@@ -10,6 +10,15 @@ namespace crow_alarm_panel {
 
 static const char *TAG = "crow_alarm_panel";
 
+static int decode_year_suffix_from_byte(uint8_t yb) {
+  int hi = (yb >> 4) & 0x0F;
+  int lo = yb & 0x0F;
+  if (hi <= 9 && lo <= 9) {
+    return hi * 10 + lo;
+  }
+  return (int) yb;
+}
+
 void CrowAlarmPanelStore::setup(InternalGPIOPin *clock_pin, InternalGPIOPin *data_pin) {
   clock_pin->setup();
   data_pin->setup();
@@ -109,6 +118,24 @@ void CrowAlarmPanel::setup() {
 
   if (this->armed_state_ != nullptr) {
     this->armed_state_->publish_state("disarmed");
+  }
+  if (this->hardware_version_ != nullptr) {
+    this->hardware_version_->publish_state("unknown");
+  }
+  if (this->firmware_version_ != nullptr) {
+    this->firmware_version_->publish_state("unknown");
+  }
+  if (this->panel_time_ != nullptr) {
+    this->panel_time_->publish_state("unknown");
+  }
+  if (this->panel_date_ != nullptr) {
+    this->panel_date_->publish_state("unknown");
+  }
+  if (this->panel_year_ != nullptr) {
+    this->panel_year_->publish_state("unknown");
+  }
+  if (this->suspected_temperature_ != nullptr) {
+    this->suspected_temperature_->publish_state("unknown");
   }
   if (this->alarm_control_panel_ != nullptr) {
     this->alarm_control_panel_->publish_state(alarm_control_panel::ACP_STATE_DISARMED);
@@ -236,6 +263,65 @@ void CrowAlarmPanel::loop() {
         }
         break;
       }
+      case PANEL_READY: {
+        if (this->panel_ready_ == nullptr) {
+          break;
+        }
+        if (data.size() < 3) {
+          break;
+        }
+        uint8_t b = data[2];
+        if (b == 0xC1 || b == 0xC0 || b == 0x60) {
+          this->panel_ready_->publish_state(b == 0xC1);
+        }
+        break;
+      }
+      case PANEL_INFO: {
+        const bool need_hwfw = this->hardware_version_ != nullptr || this->firmware_version_ != nullptr;
+        const bool need_suspect = this->suspected_temperature_ != nullptr;
+        if (!need_hwfw && !need_suspect) {
+          break;
+        }
+        if (need_hwfw) {
+          if (data.size() < 5) {
+            ESP_LOGW(TAG, "Panel info (0x23) too short for HW/FW");
+          } else {
+            int main = (int) ((uint16_t(data[1]) << 8) | data[2]);
+            int s1 = data[3];
+            int s2 = data[4];
+            char hw[16];
+            char fw[16];
+            snprintf(hw, sizeof(hw), "v%d", main);
+            snprintf(fw, sizeof(fw), "v%d.%d", s1, s2);
+            if (this->hardware_version_ != nullptr) {
+              this->hardware_version_->publish_state(hw);
+            }
+            if (this->firmware_version_ != nullptr) {
+              this->firmware_version_->publish_state(fw);
+            }
+          }
+        }
+        if (need_suspect && !data.empty()) {
+          char sbuf[160];
+          if (data.size() >= 8) {
+            snprintf(sbuf, sizeof(sbuf),
+                     "b0=0x%02X tail=%02X.%02X.%02X | unverified (legacy guess: temp in 0x23); b6=%u dec",
+                     data[0], data[5], data[6], data[7], (unsigned) data[6]);
+          } else if (data.size() >= 6) {
+            snprintf(sbuf, sizeof(sbuf),
+                     "b0=0x%02X partial=%02X.%02X | unverified (legacy guess: temp in 0x23); b6=%u dec",
+                     data[0], data[5], data[6], (unsigned) data[6]);
+          } else if (data.size() >= 1) {
+            snprintf(sbuf, sizeof(sbuf),
+                     "only %zu B, b0=0x%02X | unverified (legacy guess: temp in 0x23)", data.size(), data[0]);
+          } else {
+            snprintf(sbuf, sizeof(sbuf), "empty payload | unverified (legacy guess: temp in 0x23)");
+          }
+          this->suspected_temperature_->publish_state(sbuf);
+        }
+        ESP_LOGD(TAG, "Panel info (0x23) [%s]", format_hex_pretty(data).c_str());
+        break;
+      }
       case KEYPRESS: {
         if (data.size() < 2) {
           ESP_LOGW(TAG, "Keypress too short, discarding");
@@ -261,15 +347,85 @@ void CrowAlarmPanel::loop() {
           break;
         }
         const char *day_of_week = DAYS[data[0] - 1];
-        uint8_t mins = data[2];
-        uint8_t hour = data[1];
+        int hour = data[1];
+        int mins = data[2];
         if (mins >= 60) {
-          hour = hour + (mins / 60);
-          mins = mins % 60;
+          hour += mins / 60;
+          mins %= 60;
         }
+        uint8_t sb = data[3];
+        int sec = 0;
+        bool phase_ok = false;
+        if (sb == 0x00) {
+          sec = 0;
+          phase_ok = true;
+        } else if (sb == 0x0F) {
+          sec = 15;
+          phase_ok = true;
+        } else if (sb == 0x1E) {
+          sec = 30;
+          phase_ok = true;
+        } else if (sb == 0x2D) {
+          sec = 45;
+          phase_ok = true;
+        }
+        bool date_trusted = (sb == 0x00 || sb == 0x1E || sb == 0x2D);
+        int day = data[4];
+        int month = data[5];
+        uint8_t yb = data[6];
+        int naive_yy = decode_year_suffix_from_byte(yb);
+        int naive_year = 2000 + naive_yy;
+
+        if (date_trusted && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+          int year = naive_year;
+          if (year < 2020 || year > 2039) {
+            if (this->clock_time_valid_ && this->pt_year_ >= 2020 && this->pt_year_ <= 2039) {
+              year = this->pt_year_;
+            } else {
+              year = 2026;
+            }
+          } else if (this->clock_time_valid_ && this->pt_year_ >= 2020 && this->pt_year_ <= 2039) {
+            int prev = this->pt_year_;
+            if (year > prev + 2 || year < prev - 2) {
+              year = prev;
+            }
+          }
+          this->pt_year_ = year;
+          this->pt_month_ = month;
+          this->pt_day_ = day;
+        }
+
+        if (phase_ok && hour <= 23 && mins <= 59) {
+          this->pt_h_ = hour;
+          this->pt_m_ = mins;
+          this->pt_s_ = sec;
+          this->clock_time_valid_ = true;
+        }
+
+        if (this->clock_time_valid_ &&
+            (this->panel_time_ != nullptr || this->panel_date_ != nullptr || this->panel_year_ != nullptr)) {
+          if (this->panel_time_ != nullptr) {
+            char tbuf[16];
+            snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", this->pt_h_, this->pt_m_, this->pt_s_);
+            this->panel_time_->publish_state(tbuf);
+          }
+          if (this->pt_month_ >= 1 && this->pt_month_ <= 12 && this->pt_day_ >= 1 && this->pt_day_ <= 31 &&
+              this->pt_year_ >= 2020) {
+            char dbuf[16];
+            char ybuf[8];
+            snprintf(dbuf, sizeof(dbuf), "%04d-%02d-%02d", this->pt_year_, this->pt_month_, this->pt_day_);
+            snprintf(ybuf, sizeof(ybuf), "%04d", this->pt_year_);
+            if (this->panel_date_ != nullptr) {
+              this->panel_date_->publish_state(dbuf);
+            }
+            if (this->panel_year_ != nullptr) {
+              this->panel_year_->publish_state(ybuf);
+            }
+          }
+        }
+
         ESP_LOGV(TAG, "Date/Time %s 20%02d-%02d-%02d %02d:%02d:%02d", day_of_week, data[6], data[5], data[4], hour,
                  mins, data[3]);
-        // ESP_LOGD(TAG, "[%s]", format_hex_pretty(data).c_str());
         break;
       }
       case RESPONSE_TIME:
