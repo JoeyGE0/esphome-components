@@ -1,15 +1,15 @@
 from esphome import pins, automation
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import text_sensor, alarm_control_panel as acp
+import esphome.components.text_sensor as text_sensor_comp
+from esphome.components import alarm_control_panel as acp
 from esphome.const import (
     CONF_ADDRESS,
     CONF_ID,
     CONF_NAME,
     CONF_CLOCK_PIN,
     CONF_DATA_PIN,
-    CONF_NAME,
-    CONF_OUTPUTS,
+    ENTITY_CATEGORY_DIAGNOSTIC,
 )
 
 AUTO_LOAD = ["binary_sensor", "text_sensor", "switch", "button", "alarm_control_panel"]
@@ -51,14 +51,14 @@ def _default_entity_name(config, title: str) -> str:
 
 
 async def _register_diagnostic_text_sensor(config, parent_id, suffix: str, title: str):
-    sch = text_sensor.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC)
+    sch = text_sensor_comp.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC)
     sens_cfg = sch(
         {
             CONF_ID: parent_id.extend(suffix, is_declaration=True),
             CONF_NAME: _default_entity_name(config, title),
         }
     )
-    sens = await text_sensor.new_text_sensor(sens_cfg)
+    sens = await text_sensor_comp.new_text_sensor(sens_cfg)
     await cg.register_component(sens, sens_cfg)
     return sens
 
