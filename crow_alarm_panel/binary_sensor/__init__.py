@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import binary_sensor
-from esphome.const import CONF_ID, CONF_TYPE
+from esphome.const import CONF_ID, CONF_TYPE, ENTITY_CATEGORY_NONE
 from .. import CrowAlarmPanel, CONF_CROW_ALARM_PANEL_ID
 
 DEPENDENCIES = ["crow_alarm_panel"]
@@ -21,7 +21,9 @@ ZONE_SCHEMA = binary_sensor.binary_sensor_schema().extend(
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
-PANEL_READY_SCHEMA = binary_sensor.binary_sensor_schema().extend(
+PANEL_READY_SCHEMA = binary_sensor.binary_sensor_schema(
+    entity_category=ENTITY_CATEGORY_NONE,
+).extend(
     {
         cv.GenerateID(): cv.declare_id(BinarySensor),
         cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
