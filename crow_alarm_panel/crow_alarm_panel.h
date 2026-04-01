@@ -15,7 +15,7 @@ namespace esphome {
 namespace crow_alarm_panel {
 
 // 0x10: panel status. panel_ready uses payload byte2 (C1=ready, C0/60=not ready).
-// mains_power (AC/mains fault): same opcode; trigger on data[1] 0x01|0x02 with data[2] 0xC3, clear on 0x00,0xC1 — no separate message ID.
+// mains_power: same opcode; fault on 00.03.C2|C3 or 00.(01|02).C3; clear on 00.00.C0|C1.
 static const uint8_t PANEL_READY = 0x10;
 
 static const uint8_t ARMED_STATE = 0x11;
@@ -165,7 +165,7 @@ class CrowAlarmPanel : public Component {
 
   void register_armed_state(text_sensor::TextSensor *armed_state_sensor) { this->armed_state_ = armed_state_sensor; }
   void register_panel_ready(binary_sensor::BinarySensor *sensor) { this->panel_ready_ = sensor; }
-  /// AC mains lost when 0x10 payload matches observed AC-fail pattern; clears on all-segments-ready (00.C1).
+  /// Mains fault when 0x10 matches 00.03.C2|C3 or 00.(01|02).C3; clears on 00.00.C0|C1.
   void register_mains_power(binary_sensor::BinarySensor *sensor) { this->mains_power_ = sensor; }
   void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
@@ -220,7 +220,7 @@ class CrowAlarmPanel : public Component {
   text_sensor::TextSensor *panel_time_;
   text_sensor::TextSensor *panel_date_;
   text_sensor::TextSensor *panel_year_;
-  text_sensor::TextSensor *suspected_temperature_;
+  text_sensor::TextSensor *suspected_temperature_{nullptr};
   bool clock_time_valid_{false};
   uint8_t pt_h_{0};
   uint8_t pt_m_{0};
