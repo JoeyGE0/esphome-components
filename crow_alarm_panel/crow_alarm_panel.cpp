@@ -276,8 +276,7 @@ void CrowAlarmPanel::loop() {
         if (this->mains_power_ != nullptr && data[0] == 0x00) {
           uint8_t b1 = data[1];
           uint8_t b2 = data[2];
-          const bool mains_fault = (b1 == 0x03 && (b2 == 0xC2 || b2 == 0xC3)) ||
-                                   ((b1 == 0x01 || b1 == 0x02) && b2 == 0xC3);
+          const bool mains_fault = ((b1 == 0x02 || b1 == 0x03) && (b2 == 0xC2 || b2 == 0xC3));
           const bool mains_ok = (b1 == 0x00 && (b2 == 0xC0 || b2 == 0xC1));
           if (mains_fault) {
             this->mains_power_->publish_state(true);
