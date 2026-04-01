@@ -264,15 +264,23 @@ void CrowAlarmPanel::loop() {
         break;
       }
       case PANEL_READY: {
-        if (this->panel_ready_ == nullptr) {
-          break;
-        }
         if (data.size() < 3) {
           break;
         }
-        uint8_t b = data[2];
-        if (b == 0xC1 || b == 0xC0 || b == 0x60) {
-          this->panel_ready_->publish_state(b == 0xC1);
+        if (this->panel_ready_ != nullptr) {
+          uint8_t b = data[2];
+          if (b == 0xC1 || b == 0xC0 || b == 0x60) {
+            this->panel_ready_->publish_state(b == 0xC1);
+          }
+        }
+        if (this->mains_power_ != nullptr) {
+          uint8_t b1 = data[1];
+          uint8_t b2 = data[2];
+          if ((b1 == 0x01 || b1 == 0x02) && b2 == 0xC3) {
+            this->mains_power_->publish_state(true);
+          } else if (b1 == 0x00 && b2 == 0xC1) {
+            this->mains_power_->publish_state(false);
+          }
         }
         break;
       }
