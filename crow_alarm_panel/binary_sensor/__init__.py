@@ -1,7 +1,13 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import binary_sensor
-from esphome.const import CONF_ID, CONF_TYPE, ENTITY_CATEGORY_NONE
+from esphome.const import (
+    CONF_ID,
+    CONF_TYPE,
+    DEVICE_CLASS_PROBLEM,
+    ENTITY_CATEGORY_DIAGNOSTIC,
+    ENTITY_CATEGORY_NONE,
+)
 from .. import CrowAlarmPanel, CONF_CROW_ALARM_PANEL_ID
 
 DEPENDENCIES = ["crow_alarm_panel"]
@@ -12,6 +18,7 @@ BinarySensor = binary_sensor_ns.class_("BinarySensor", cg.EntityBase)
 CONF_ZONE = "zone"
 CONF_BYPASS = "bypass"
 CONF_PANEL_READY = "panel_ready"
+CONF_MAINS_POWER = "mains_power"
 
 ZONE_SCHEMA = binary_sensor.binary_sensor_schema().extend(
     {
@@ -30,11 +37,22 @@ PANEL_READY_SCHEMA = binary_sensor.binary_sensor_schema(
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
+MAINS_POWER_SCHEMA = binary_sensor.binary_sensor_schema(
+    entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    device_class=DEVICE_CLASS_PROBLEM,
+).extend(
+    {
+        cv.GenerateID(): cv.declare_id(BinarySensor),
+        cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
+    }
+).extend(cv.COMPONENT_SCHEMA)
+
 CONFIG_SCHEMA = cv.typed_schema(
     {
         CONF_ZONE: ZONE_SCHEMA,
         CONF_BYPASS: ZONE_SCHEMA,
         CONF_PANEL_READY: PANEL_READY_SCHEMA,
+        CONF_MAINS_POWER: MAINS_POWER_SCHEMA,
     }
 )
 
@@ -52,3 +70,5 @@ def to_code(config):
         cg.add(paren.register_zone_bypass(var, config[CONF_ZONE]))
     elif type == CONF_PANEL_READY:
         cg.add(paren.register_panel_ready(var))
+    elif type == CONF_MAINS_POWER:
+        cg.add(paren.register_mains_power(var))
