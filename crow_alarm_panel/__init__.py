@@ -1,22 +1,21 @@
 from esphome import pins, automation
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import text_sensor, switch, alarm_control_panel as acp
+import esphome.components.text_sensor as text_sensor_comp
+from esphome.components import alarm_control_panel as acp
 from esphome.const import (
     CONF_ADDRESS,
     CONF_ID,
+    CONF_NAME,
     CONF_CLOCK_PIN,
     CONF_DATA_PIN,
-    CONF_NAME,
-    CONF_OUTPUTS,
+    ENTITY_CATEGORY_DIAGNOSTIC,
 )
 
 AUTO_LOAD = ["binary_sensor", "text_sensor", "switch", "button", "alarm_control_panel"]
 MULTI_CONF = True
 
-CONF_ARMED_STATE = "armed_state"
 CONF_CROW_ALARM_PANEL_ID = "crow_alarm_panel_id"
-CONF_NUM_ZONES = "number_of_zones"
 CONF_KEYPADS = "keypads"
 CONF_ON_MESSAGE = "on_message"
 
@@ -46,6 +45,24 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
+def _default_entity_name(config, title: str) -> str:
+    base = config.get(CONF_NAME)
+    return f"{base} {title}" if base else title
+
+
+async def _register_diagnostic_text_sensor(config, parent_id, suffix: str, title: str):
+    sch = text_sensor_comp.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC)
+    sens_cfg = sch(
+        {
+            CONF_ID: parent_id.extend(suffix, is_declaration=True),
+            CONF_NAME: _default_entity_name(config, title),
+        }
+    )
+    sens = await text_sensor_comp.new_text_sensor(sens_cfg)
+    await cg.register_component(sens, sens_cfg)
+    return sens
+
+
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
@@ -68,3 +85,19 @@ async def to_code(config):
             [(cg.uint8, "type"), (cg.std_vector.template(cg.uint8), "data")],
             config[CONF_ON_MESSAGE],
         )
+
+    pid = config[CONF_ID]
+    hw = await _register_diagnostic_text_sensor(config, pid, "hardware_version_ts", "Panel hardware")
+    cg.add(var.register_hardware_version(hw))
+    fw = await _register_diagnostic_text_sensor(config, pid, "firmware_version_ts", "Panel firmware")
+    cg.add(var.register_firmware_version(fw))
+    sus = await _register_diagnostic_text_sensor(
+        config, pid, "suspected_temperature_ts", "Panel info tail (suspect)"
+    )
+    cg.add(var.register_suspected_temperature(sus))
+    pt = await _register_diagnostic_text_sensor(config, pid, "panel_time_ts", "Panel time")
+    cg.add(var.register_panel_time(pt))
+    pd = await _register_diagnostic_text_sensor(config, pid, "panel_date_ts", "Panel date")
+    cg.add(var.register_panel_date(pd))
+    py = await _register_diagnostic_text_sensor(config, pid, "panel_year_ts", "Panel year")
+    cg.add(var.register_panel_year(py))
