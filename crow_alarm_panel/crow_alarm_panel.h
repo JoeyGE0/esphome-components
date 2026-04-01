@@ -14,8 +14,9 @@
 namespace esphome {
 namespace crow_alarm_panel {
 
-static const uint8_t PANEL_READY = 0x10;  // Status / ready (payload byte 2: C1/C0/60)
-static const uint8_t UNKNOWN2 = 0x20;     // Unconfirmed, may be for AC Fail or something else (will test this further)
+// 0x10: panel status. panel_ready uses payload byte2 (C1=ready, C0/60=not ready).
+// mains_power (AC/mains fault): same opcode; trigger on data[1] 0x01|0x02 with data[2] 0xC3, clear on 0x00,0xC1 — no separate message ID.
+static const uint8_t PANEL_READY = 0x10;
 
 static const uint8_t ARMED_STATE = 0x11;
 static const uint8_t ZONE_STATE = 0x12;
@@ -164,6 +165,8 @@ class CrowAlarmPanel : public Component {
 
   void register_armed_state(text_sensor::TextSensor *armed_state_sensor) { this->armed_state_ = armed_state_sensor; }
   void register_panel_ready(binary_sensor::BinarySensor *sensor) { this->panel_ready_ = sensor; }
+  /// AC mains lost when 0x10 payload matches observed AC-fail pattern; clears on all-segments-ready (00.C1).
+  void register_mains_power(binary_sensor::BinarySensor *sensor) { this->mains_power_ = sensor; }
   void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
   void register_panel_time(text_sensor::TextSensor *sensor) { this->panel_time_ = sensor; }
@@ -211,6 +214,7 @@ class CrowAlarmPanel : public Component {
   uint8_t keypad_address_;
   text_sensor::TextSensor *armed_state_;
   binary_sensor::BinarySensor *panel_ready_;
+  binary_sensor::BinarySensor *mains_power_{nullptr};
   text_sensor::TextSensor *hardware_version_;
   text_sensor::TextSensor *firmware_version_;
   text_sensor::TextSensor *panel_time_;
