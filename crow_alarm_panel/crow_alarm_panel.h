@@ -167,7 +167,7 @@ class CrowAlarmPanel : public Component {
   void register_panel_ready(binary_sensor::BinarySensor *sensor) { this->panel_ready_ = sensor; }
   /// Mains fault when 0x10 matches 00.(02|03).C2|C3; clears on 00.00.C0|C1.
   void register_mains_power(binary_sensor::BinarySensor *sensor) { this->mains_power_ = sensor; }
-  /// Experimental battery warning from 0x10 warning-shaped frames (00.(01|02).C3).
+  /// Experimental battery warning from 0x10: 00.01.C3 only (02.C3 is AC-fail family, not battery).
   void register_battery_state_experimental(binary_sensor::BinarySensor *sensor) { this->battery_state_experimental_ = sensor; }
   void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
