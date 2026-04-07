@@ -154,6 +154,30 @@ CrowAlarmPanelKeypad CrowAlarmPanel::find_keypad_(uint8_t address) {
   return {};
 }
 
+void CrowAlarmPanel::apply_battery_low_heuristic_() {
+  if (this->battery_state_experimental_ == nullptr) {
+    return;
+  }
+  if (!this->mains_fault_active_) {
+    this->battery_state_experimental_->publish_state(false);
+    return;
+  }
+  if (!this->last_time_prefix_valid_) {
+    return;
+  }
+  const uint8_t d0 = this->last_time_dow_;
+  const uint8_t d1 = this->last_time_h_;
+  const uint8_t d2 = this->last_time_m_;
+  const bool unplug_style = (d0 == 0x01 && d1 == 0x01);
+  const bool bat_low_hint = (d0 == 0x01 && d1 == 0x00 &&
+                             (d2 == 0xC2 || d2 == 0xC3 || (d2 >= 0x80 && d2 < 0xC0)));
+  if (unplug_style) {
+    this->battery_state_experimental_->publish_state(false);
+  } else if (bat_low_hint) {
+    this->battery_state_experimental_->publish_state(true);
+  }
+}
+
 void CrowAlarmPanel::loop() {
   if (this->store_.data_length) {
     if (this->store_.data_length < 2) {
@@ -270,28 +294,24 @@ void CrowAlarmPanel::loop() {
             this->panel_ready_->publish_state(b == 0xC1);
           }
         }
-        if (this->mains_power_ != nullptr && data[0] == 0x00) {
+        if (data[0] == 0x00) {
           uint8_t b1 = data[1];
           uint8_t b2 = data[2];
           const bool mains_fault = ((b1 == 0x02 || b1 == 0x03) && (b2 == 0xC2 || b2 == 0xC3));
           const bool mains_ok = (b1 == 0x00 && (b2 == 0xC0 || b2 == 0xC1));
           if (mains_fault) {
-            this->mains_power_->publish_state(true);
+            this->mains_fault_active_ = true;
           } else if (mains_ok) {
-            this->mains_power_->publish_state(false);
+            this->mains_fault_active_ = false;
           }
-        }
-        if (this->battery_state_experimental_ != nullptr && data[0] == 0x00) {
-          uint8_t b1 = data[1];
-          uint8_t b2 = data[2];
-          // 02.C3 appears in AC-fail / ready multiplex (same as mains); only 01.C3 = battery warn.
-          const bool battery_warn = (b1 == 0x01) && b2 == 0xC3;
-          const bool battery_clear = (b1 == 0x00 && (b2 == 0xC0 || b2 == 0xC1));
-          if (battery_warn) {
-            this->battery_state_experimental_->publish_state(true);
-          } else if (battery_clear) {
-            this->battery_state_experimental_->publish_state(false);
+          if (this->mains_power_ != nullptr) {
+            if (mains_fault) {
+              this->mains_power_->publish_state(true);
+            } else if (mains_ok) {
+              this->mains_power_->publish_state(false);
+            }
           }
+          this->apply_battery_low_heuristic_();
         }
         break;
       }
@@ -365,6 +385,12 @@ void CrowAlarmPanel::loop() {
           ESP_LOGW(TAG, "Current time has invalid day index %d", data[0]);
           break;
         }
+        this->last_time_dow_ = data[0];
+        this->last_time_h_ = data[1];
+        this->last_time_m_ = data[2];
+        this->last_time_prefix_valid_ = true;
+        this->apply_battery_low_heuristic_();
+
         const char *day_of_week = DAYS[data[0] - 1];
         int hour = data[1];
         int mins = data[2];
