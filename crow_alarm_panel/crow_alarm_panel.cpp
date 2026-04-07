@@ -284,7 +284,8 @@ void CrowAlarmPanel::loop() {
         if (this->battery_state_experimental_ != nullptr && data[0] == 0x00) {
           uint8_t b1 = data[1];
           uint8_t b2 = data[2];
-          const bool battery_warn = (b1 == 0x01 || b1 == 0x02) && b2 == 0xC3;
+          // 02.C3 appears in AC-fail / ready multiplex (same as mains); only 01.C3 = battery warn.
+          const bool battery_warn = (b1 == 0x01) && b2 == 0xC3;
           const bool battery_clear = (b1 == 0x00 && (b2 == 0xC0 || b2 == 0xC1));
           if (battery_warn) {
             this->battery_state_experimental_->publish_state(true);
