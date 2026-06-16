@@ -139,9 +139,6 @@ void CrowAlarmPanel::setup() {
   if (this->panel_date_ != nullptr) {
     this->panel_date_->publish_state("unknown");
   }
-  if (this->panel_year_ != nullptr) {
-    this->panel_year_->publish_state("unknown");
-  }
   if (this->suspected_temperature_ != nullptr) {
     this->suspected_temperature_->publish_state("unknown");
   }
@@ -441,8 +438,7 @@ void CrowAlarmPanel::loop() {
           this->clock_time_valid_ = true;
         }
 
-        if (this->clock_time_valid_ &&
-            (this->panel_time_ != nullptr || this->panel_date_ != nullptr || this->panel_year_ != nullptr)) {
+        if (this->clock_time_valid_ && (this->panel_time_ != nullptr || this->panel_date_ != nullptr)) {
           if (this->panel_time_ != nullptr) {
             char tbuf[16];
             snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", this->pt_h_, this->pt_m_, this->pt_s_);
@@ -451,14 +447,9 @@ void CrowAlarmPanel::loop() {
           if (this->pt_month_ >= 1 && this->pt_month_ <= 12 && this->pt_day_ >= 1 && this->pt_day_ <= 31 &&
               this->pt_year_ >= 2020) {
             char dbuf[16];
-            char ybuf[8];
             snprintf(dbuf, sizeof(dbuf), "%04d-%02d-%02d", this->pt_year_, this->pt_month_, this->pt_day_);
-            snprintf(ybuf, sizeof(ybuf), "%04d", this->pt_year_);
             if (this->panel_date_ != nullptr) {
               this->panel_date_->publish_state(dbuf);
-            }
-            if (this->panel_year_ != nullptr) {
-              this->panel_year_->publish_state(ybuf);
             }
           }
         }

@@ -111,7 +111,3 @@ async def to_code(config):
         config, pid, "panel_date_ts", "Panel date", icon="mdi:calendar"
     )
     cg.add(var.register_panel_date(pd))
-    py = await _register_diagnostic_text_sensor(
-        config, pid, "panel_year_ts", "Panel year", icon="mdi:calendar"
-    )
-    cg.add(var.register_panel_year(py))

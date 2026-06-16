@@ -174,7 +174,6 @@ class CrowAlarmPanel : public Component {
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
   void register_panel_time(text_sensor::TextSensor *sensor) { this->panel_time_ = sensor; }
   void register_panel_date(text_sensor::TextSensor *sensor) { this->panel_date_ = sensor; }
-  void register_panel_year(text_sensor::TextSensor *sensor) { this->panel_year_ = sensor; }
   void register_suspected_temperature(text_sensor::TextSensor *sensor) { this->suspected_temperature_ = sensor; }
   void register_output_switch(switch_::Switch *output_switch, uint8_t output_number) {
     this->outputs_.push_back(std::move(CrowAlarmPanelOutput{
@@ -223,7 +222,6 @@ class CrowAlarmPanel : public Component {
   text_sensor::TextSensor *firmware_version_;
   text_sensor::TextSensor *panel_time_;
   text_sensor::TextSensor *panel_date_;
-  text_sensor::TextSensor *panel_year_;
   text_sensor::TextSensor *suspected_temperature_{nullptr};
   bool clock_time_valid_{false};
   uint8_t pt_h_{0};
