@@ -16,6 +16,17 @@ static int decode_year_suffix_from_byte(uint8_t yb) {
   return (int) yb;
 }
 
+// 0x54 bytes [1][2] are big-endian minutes since midnight (e.g. 00.84 -> 02:12, 01.1D -> 04:45).
+static bool decode_panel_clock_time(uint8_t b1, uint8_t b2, int *hour_out, int *min_out) {
+  int total = (b1 << 8) | b2;
+  if (total >= 24 * 60) {
+    return false;
+  }
+  *hour_out = total / 60;
+  *min_out = total % 60;
+  return true;
+}
+
 void CrowAlarmPanelStore::setup(InternalGPIOPin *clock_pin, InternalGPIOPin *data_pin) {
   clock_pin->setup();
   data_pin->setup();
@@ -154,30 +165,6 @@ CrowAlarmPanelKeypad CrowAlarmPanel::find_keypad_(uint8_t address) {
   return {};
 }
 
-void CrowAlarmPanel::apply_battery_low_heuristic_() {
-  if (this->battery_state_experimental_ == nullptr) {
-    return;
-  }
-  if (!this->mains_fault_active_) {
-    this->battery_state_experimental_->publish_state(false);
-    return;
-  }
-  if (!this->last_time_prefix_valid_) {
-    return;
-  }
-  const uint8_t d0 = this->last_time_dow_;
-  const uint8_t d1 = this->last_time_h_;
-  const uint8_t d2 = this->last_time_m_;
-  const bool unplug_style = (d0 == 0x01 && d1 == 0x01);
-  const bool bat_low_hint = (d0 == 0x01 && d1 == 0x00 &&
-                             (d2 == 0xC2 || d2 == 0xC3 || (d2 >= 0x80 && d2 < 0xC0)));
-  if (unplug_style) {
-    this->battery_state_experimental_->publish_state(false);
-  } else if (bat_low_hint) {
-    this->battery_state_experimental_->publish_state(true);
-  }
-}
-
 void CrowAlarmPanel::loop() {
   if (this->store_.data_length) {
     if (this->store_.data_length < 2) {
@@ -296,22 +283,25 @@ void CrowAlarmPanel::loop() {
         }
         if (data[0] == 0x00) {
           uint8_t b1 = data[1];
-          uint8_t b2 = data[2];
-          const bool mains_fault = ((b1 == 0x02 || b1 == 0x03) && (b2 == 0xC2 || b2 == 0xC3));
-          const bool mains_ok = (b1 == 0x00 && (b2 == 0xC0 || b2 == 0xC1));
-          if (mains_fault) {
-            this->mains_fault_active_ = true;
-          } else if (mains_ok) {
-            this->mains_fault_active_ = false;
+          if (b1 == 0x01) {
+            break;
           }
+          const bool ac_fail = (b1 & 0x02) != 0;
+          const bool ac_ok = (b1 == 0x00);
           if (this->mains_power_ != nullptr) {
-            if (mains_fault) {
+            if (ac_fail) {
               this->mains_power_->publish_state(true);
-            } else if (mains_ok) {
+            } else if (ac_ok) {
               this->mains_power_->publish_state(false);
             }
           }
-          this->apply_battery_low_heuristic_();
+          if (this->battery_state_experimental_ != nullptr) {
+            if (b1 == 0x03) {
+              this->battery_state_experimental_->publish_state(true);
+            } else if (b1 == 0x02 || ac_ok) {
+              this->battery_state_experimental_->publish_state(false);
+            }
+          }
         }
         break;
       }
@@ -385,18 +375,12 @@ void CrowAlarmPanel::loop() {
           ESP_LOGW(TAG, "Current time has invalid day index %d", data[0]);
           break;
         }
-        this->last_time_dow_ = data[0];
-        this->last_time_h_ = data[1];
-        this->last_time_m_ = data[2];
-        this->last_time_prefix_valid_ = true;
-        this->apply_battery_low_heuristic_();
-
         const char *day_of_week = DAYS[data[0] - 1];
-        int hour = data[1];
-        int mins = data[2];
-        if (mins >= 60) {
-          hour += mins / 60;
-          mins %= 60;
+        int hour = 0;
+        int mins = 0;
+        if (!decode_panel_clock_time(data[1], data[2], &hour, &mins)) {
+          ESP_LOGW(TAG, "Current time has invalid clock bytes %02x.%02x", data[1], data[2]);
+          break;
         }
         uint8_t sb = data[3];
         int sec = 0;
@@ -414,7 +398,8 @@ void CrowAlarmPanel::loop() {
           sec = 45;
           phase_ok = true;
         }
-        bool date_trusted = (sb == 0x00 || sb == 0x1E || sb == 0x2D);
+        // Date bytes are unreliable on phase 0x00 (top-of-minute); 0x0F is time-only.
+        bool date_trusted = (sb == 0x1E || sb == 0x2D);
         int day = data[4];
         int month = data[5];
         uint8_t yb = data[6];

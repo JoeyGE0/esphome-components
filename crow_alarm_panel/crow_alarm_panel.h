@@ -15,7 +15,8 @@ namespace esphome {
 namespace crow_alarm_panel {
 
 // 0x10: panel status. panel_ready uses payload byte2 (C1=ready, C0/60=not ready).
-// mains_power: same opcode; fault on 00.(02|03).C2|C3; clear on 00.00.C0|C1.
+// mains_power: 0x10 byte1 bit1 set (0x02|0x03); clear on 0x00; ignore 0x01 transition.
+// battery low: 0x10 byte1 == 0x03 (AC fail + batt low); off on 0x00 or 0x02.
 static const uint8_t PANEL_READY = 0x10;
 
 static const uint8_t ARMED_STATE = 0x11;
@@ -165,10 +166,9 @@ class CrowAlarmPanel : public Component {
 
   void register_armed_state(text_sensor::TextSensor *armed_state_sensor) { this->armed_state_ = armed_state_sensor; }
   void register_panel_ready(binary_sensor::BinarySensor *sensor) { this->panel_ready_ = sensor; }
-  /// Mains fault when 0x10 matches 00.(02|03).C2|C3; clears on 00.00.C0|C1.
+  /// Mains fault when 0x10 byte1 bit1 is set (0x02|0x03); clears on byte1 0x00; ignores 0x01 transition.
   void register_mains_power(binary_sensor::BinarySensor *sensor) { this->mains_power_ = sensor; }
-  /// Heuristic battery low: only when mains fault (0x10) and last 0x54 raw prefix matches field captures
-  /// (01.00.C2|C3 or 01.00.80–BF); cleared on mains OK or 0x54 01.01.xx (unplug-style). Unverified on all panels.
+  /// Battery low when 0x10 byte1 == 0x03; off on 0x00 or 0x02. Only observed with AC fail on field panels.
   void register_battery_state_experimental(binary_sensor::BinarySensor *sensor) { this->battery_state_experimental_ = sensor; }
   void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
@@ -200,7 +200,6 @@ class CrowAlarmPanel : public Component {
  protected:
   CrowAlarmPanelKeypad find_keypad_(uint8_t address);
   bool is_bus_idle_();
-  void apply_battery_low_heuristic_();
 
   // Transmission methods (blocking)
   void send_packet_blocking_(const std::vector<uint8_t> &packet);
@@ -220,11 +219,6 @@ class CrowAlarmPanel : public Component {
   binary_sensor::BinarySensor *panel_ready_;
   binary_sensor::BinarySensor *mains_power_{nullptr};
   binary_sensor::BinarySensor *battery_state_experimental_{nullptr};
-  bool mains_fault_active_{false};
-  uint8_t last_time_dow_{0};
-  uint8_t last_time_h_{0};
-  uint8_t last_time_m_{0};
-  bool last_time_prefix_valid_{false};
   text_sensor::TextSensor *hardware_version_;
   text_sensor::TextSensor *firmware_version_;
   text_sensor::TextSensor *panel_time_;
