@@ -145,6 +145,15 @@ void CrowAlarmPanel::setup() {
   if (this->suspected_temperature_ != nullptr) {
     this->suspected_temperature_->publish_state("unknown");
   }
+  if (this->panel_ready_ != nullptr) {
+    this->panel_ready_->publish_state(false);
+  }
+  if (this->mains_power_ != nullptr) {
+    this->mains_power_->publish_state(false);
+  }
+  if (this->battery_state_experimental_ != nullptr) {
+    this->battery_state_experimental_->publish_state(false);
+  }
   if (this->alarm_control_panel_ != nullptr) {
     this->alarm_control_panel_->publish_state(alarm_control_panel::ACP_STATE_DISARMED);
   }
