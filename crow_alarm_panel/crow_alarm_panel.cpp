@@ -27,6 +27,36 @@ static bool decode_panel_clock_time(uint8_t b1, uint8_t b2, int *hour_out, int *
   return true;
 }
 
+static void format_byte_binary_(uint8_t byte, char *out) {
+  for (int i = 7; i >= 0; i--) {
+    *out++ = ((byte >> i) & 1) ? '1' : '0';
+  }
+  *out = '\0';
+}
+
+static bool panel_info_frame_valid_(const std::vector<uint8_t> &data) {
+  if (data.size() < 8) {
+    return false;
+  }
+  if (data[6] != 0x23 || data[7] != 0x03) {
+    return false;
+  }
+  return true;
+}
+
+static bool panel_info_values_sane_(int hw_rev, int fw_major, int fw_minor) {
+  if (hw_rev < 100 || hw_rev > 9999) {
+    return false;
+  }
+  if (fw_major < 0 || fw_major > 20) {
+    return false;
+  }
+  if (fw_minor < 0 || fw_minor > 99) {
+    return false;
+  }
+  return true;
+}
+
 void CrowAlarmPanelStore::setup(InternalGPIOPin *clock_pin, InternalGPIOPin *data_pin) {
   clock_pin->setup();
   data_pin->setup();
@@ -128,16 +158,16 @@ void CrowAlarmPanel::setup() {
     this->armed_state_->publish_state("disarmed");
   }
   if (this->hardware_version_ != nullptr) {
-    this->hardware_version_->publish_state("unknown");
+    this->publish_text_sensor_if_changed_(this->hardware_version_, &this->last_hardware_state_, "unknown");
   }
   if (this->firmware_version_ != nullptr) {
-    this->firmware_version_->publish_state("unknown");
+    this->publish_text_sensor_if_changed_(this->firmware_version_, &this->last_firmware_state_, "unknown");
   }
   if (this->panel_time_ != nullptr) {
-    this->panel_time_->publish_state("unknown");
+    this->publish_text_sensor_if_changed_(this->panel_time_, &this->last_panel_time_state_, "unknown");
   }
   if (this->panel_date_ != nullptr) {
-    this->panel_date_->publish_state("unknown");
+    this->publish_text_sensor_if_changed_(this->panel_date_, &this->last_panel_date_state_, "unknown");
   }
   if (this->suspected_temperature_ != nullptr) {
     this->suspected_temperature_->publish_state("unknown");
@@ -160,6 +190,18 @@ void CrowAlarmPanel::dump_config() {
   ESP_LOGCONFIG(TAG, "Crow Alarm Panel:");
   LOG_PIN("  Clock Pin: ", this->clock_pin_);
   LOG_PIN("  Data Pin: ", this->data_pin_);
+}
+
+void CrowAlarmPanel::publish_text_sensor_if_changed_(text_sensor::TextSensor *sensor, std::string *last_state,
+                                                      const std::string &state) {
+  if (sensor == nullptr || last_state == nullptr) {
+    return;
+  }
+  if (state == *last_state) {
+    return;
+  }
+  *last_state = state;
+  sensor->publish_state(state);
 }
 
 CrowAlarmPanelKeypad CrowAlarmPanel::find_keypad_(uint8_t address) {
@@ -317,22 +359,40 @@ void CrowAlarmPanel::loop() {
         if (!need_hwfw && !need_suspect) {
           break;
         }
+        const bool frame_valid = panel_info_frame_valid_(data);
         if (need_hwfw) {
           if (data.size() < 5) {
             ESP_LOGW(TAG, "Panel info (0x23) too short for HW/FW");
+          } else if (!frame_valid) {
+            ESP_LOGW(TAG, "Panel info (0x23) ignored (bad tail): [%s]", format_hex_pretty(data).c_str());
           } else {
             int main = (int) ((uint16_t(data[1]) << 8) | data[2]);
             int s1 = data[3];
             int s2 = data[4];
-            char hw[16];
-            char fw[16];
-            snprintf(hw, sizeof(hw), "v%d", main);
-            snprintf(fw, sizeof(fw), "v%d.%d", s1, s2);
-            if (this->hardware_version_ != nullptr) {
-              this->hardware_version_->publish_state(hw);
-            }
-            if (this->firmware_version_ != nullptr) {
-              this->firmware_version_->publish_state(fw);
+            if (!panel_info_values_sane_(main, s1, s2)) {
+              ESP_LOGW(TAG, "Panel info (0x23) ignored (out of range): hw=%d fw=%d.%d [%s]", main, s1, s2,
+                       format_hex_pretty(data).c_str());
+            } else {
+              char b1_bin[9];
+              char b2_bin[9];
+              char b3_bin[9];
+              char b4_bin[9];
+              format_byte_binary_(data[1], b1_bin);
+              format_byte_binary_(data[2], b2_bin);
+              format_byte_binary_(data[3], b3_bin);
+              format_byte_binary_(data[4], b4_bin);
+              if (this->hardware_version_ != nullptr) {
+                char hw[192];
+                snprintf(hw, sizeof(hw), "v%d | b1=0x%02X(%s) b2=0x%02X(%s) BE=0x%04X | tail=23.03 valid=yes", main,
+                         data[1], b1_bin, data[2], b2_bin, main);
+                this->publish_text_sensor_if_changed_(this->hardware_version_, &this->last_hardware_state_, hw);
+              }
+              if (this->firmware_version_ != nullptr) {
+                char fw[192];
+                snprintf(fw, sizeof(fw), "v%d.%d | b3=0x%02X(%s) b4=0x%02X(%s) | tail=23.03 valid=yes", s1, s2,
+                         data[3], b3_bin, data[4], b4_bin);
+                this->publish_text_sensor_if_changed_(this->firmware_version_, &this->last_firmware_state_, fw);
+              }
             }
           }
         }
@@ -439,18 +499,44 @@ void CrowAlarmPanel::loop() {
         }
 
         if (this->clock_time_valid_ && (this->panel_time_ != nullptr || this->panel_date_ != nullptr)) {
+          char b0_bin[9];
+          char b1_bin[9];
+          char b2_bin[9];
+          char b3_bin[9];
+          char b4_bin[9];
+          char b5_bin[9];
+          char b6_bin[9];
+          format_byte_binary_(data[0], b0_bin);
+          format_byte_binary_(data[1], b1_bin);
+          format_byte_binary_(data[2], b2_bin);
+          format_byte_binary_(data[3], b3_bin);
+          format_byte_binary_(data[4], b4_bin);
+          format_byte_binary_(data[5], b5_bin);
+          format_byte_binary_(data[6], b6_bin);
+          const int total_mins = (data[1] << 8) | data[2];
+
           if (this->panel_time_ != nullptr) {
-            char tbuf[16];
-            snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", this->pt_h_, this->pt_m_, this->pt_s_);
-            this->panel_time_->publish_state(tbuf);
+            char tbuf[192];
+            snprintf(tbuf, sizeof(tbuf),
+                     "%02d:%02d:%02d | %s b0=0x%02X(%s) b1=0x%02X(%s) b2=0x%02X(%s) b3=0x%02X(%s) | mins=%d",
+                     this->pt_h_, this->pt_m_, this->pt_s_, day_of_week, data[0], b0_bin, data[1], b1_bin, data[2],
+                     b2_bin, data[3], b3_bin, total_mins);
+            this->publish_text_sensor_if_changed_(this->panel_time_, &this->last_panel_time_state_, tbuf);
           }
-          if (this->pt_month_ >= 1 && this->pt_month_ <= 12 && this->pt_day_ >= 1 && this->pt_day_ <= 31 &&
-              this->pt_year_ >= 2020) {
-            char dbuf[16];
-            snprintf(dbuf, sizeof(dbuf), "%04d-%02d-%02d", this->pt_year_, this->pt_month_, this->pt_day_);
-            if (this->panel_date_ != nullptr) {
-              this->panel_date_->publish_state(dbuf);
+          if (this->panel_date_ != nullptr) {
+            char dbuf[192];
+            if (this->pt_month_ >= 1 && this->pt_month_ <= 12 && this->pt_day_ >= 1 && this->pt_day_ <= 31 &&
+                this->pt_year_ >= 2020) {
+              snprintf(dbuf, sizeof(dbuf),
+                       "%04d-%02d-%02d | b4=0x%02X(%s) b5=0x%02X(%s) b6=0x%02X(%s) | ph=0x%02X trusted=%s",
+                       this->pt_year_, this->pt_month_, this->pt_day_, data[4], b4_bin, data[5], b5_bin, data[6],
+                       b6_bin, sb, date_trusted ? "yes" : "no");
+            } else {
+              snprintf(dbuf, sizeof(dbuf),
+                       "unknown | b4=0x%02X(%s) b5=0x%02X(%s) b6=0x%02X(%s) | ph=0x%02X trusted=%s", data[4],
+                       b4_bin, data[5], b5_bin, data[6], b6_bin, sb, date_trusted ? "yes" : "no");
             }
+            this->publish_text_sensor_if_changed_(this->panel_date_, &this->last_panel_date_state_, dbuf);
           }
         }
 

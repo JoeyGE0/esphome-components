@@ -197,6 +197,7 @@ class CrowAlarmPanel : public Component {
   void keypress(uint8_t key);
 
  protected:
+  void publish_text_sensor_if_changed_(text_sensor::TextSensor *sensor, std::string *last_state, const std::string &state);
   CrowAlarmPanelKeypad find_keypad_(uint8_t address);
   bool is_bus_idle_();
 
@@ -230,6 +231,10 @@ class CrowAlarmPanel : public Component {
   int pt_year_{0};
   int pt_month_{0};
   int pt_day_{0};
+  std::string last_panel_time_state_;
+  std::string last_panel_date_state_;
+  std::string last_hardware_state_;
+  std::string last_firmware_state_;
   alarm_control_panel::AlarmControlPanel *alarm_control_panel_;
   Trigger<uint8_t, std::vector<uint8_t>> *on_message_trigger_{new Trigger<uint8_t, std::vector<uint8_t>>()};
 
