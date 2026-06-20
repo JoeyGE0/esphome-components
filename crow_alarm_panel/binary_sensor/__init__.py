@@ -7,7 +7,6 @@ from esphome.const import (
     CONF_NAME,
     CONF_OUTPUT,
     CONF_TYPE,
-    ENTITY_CATEGORY_DIAGNOSTIC,
 )
 from .. import (
     CrowAlarmPanel,
@@ -31,9 +30,7 @@ ZONE_SCHEMA = binary_sensor.binary_sensor_schema(CrowAlarmPanelZoneBinarySensor)
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
-BYPASS_ONLY_SCHEMA = binary_sensor.binary_sensor_schema(
-    entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-).extend(
+BYPASS_ONLY_SCHEMA = binary_sensor.binary_sensor_schema().extend(
     {
         cv.GenerateID(): cv.declare_id(binary_sensor.BinarySensor),
         cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
@@ -78,9 +75,7 @@ def to_code(config):
             is_declaration=True,
             type=binary_sensor.BinarySensor,
         )
-        bypass_schema = binary_sensor.binary_sensor_schema(
-            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-        ).extend(
+        bypass_schema = binary_sensor.binary_sensor_schema().extend(
             {
                 cv.GenerateID(): cv.declare_id(binary_sensor.BinarySensor),
             }
