@@ -5,7 +5,7 @@ ESPHome custom component for integrating Crow/Arrowhead alarm panels with Home A
 ## Features
 
 - **Auto-created diagnostics**: Panel hardware, firmware, ready, mains, battery state, alarm bus connected
-- **Optional YAML**: zones, `panel_lcd` raw sniffer, armed state, ACP, buttons
+- **Optional YAML**: zones, armed state, ACP, buttons
 - **Full Alarm Control Panel Entity**: Expose a Home Assistant alarm panel while keeping button/switch entities
 - **Keypad Bus Logging**: `on_message` trigger exposes raw bus frames
 - **Output State**: Switch entities reflect output states (read-only today)
@@ -54,37 +54,38 @@ external_components:
 
 ```yaml
 crow_alarm_panel:
-  name: "Crow Alarm"
   id: alarm
   clock_pin: 18
   data_pin: 19
-  address: 0
+  address: 0  # Your keypad address
 
-# Auto-created: Panel hardware, firmware, ready, mains, battery, bus connected
+  keypads:               # Optional: label other keypads for logging
+    - name: "Main Keypad"
+      address: 0
+
+  # Optional: log every bus message
+  on_message:
+    - logger.log:
+        format: "%02x -  %s"
+        args: 
+        - "type"
+        - "format_hex_pretty(data).c_str()"
 
 text_sensor:
   - platform: crow_alarm_panel
-    crow_alarm_panel_id: alarm
     type: armed_state
     name: "Alarm Status"
 
 binary_sensor:
   - platform: crow_alarm_panel
-    crow_alarm_panel_id: alarm
     type: zone
-    zone: 2
-    name: "Hall PIR"
-    device_class: motion
-    include_bypass_sensor: true   # also creates "Hall PIR Bypassed" (read-only)
-    filters:
-      - delayed_off: 2000ms
+    zone: 1
+    name: "Front Door"
 
-  # Or separate bypass block (still supported):
-  # - platform: crow_alarm_panel
-  #   crow_alarm_panel_id: alarm
-  #   type: bypass
-  #   zone: 2
-  #   name: "Hall PIR Bypassed"
+  - platform: crow_alarm_panel
+    type: bypass
+    zone: 1
+    name: "Front Door Bypassed"
 
 # Full alarm control panel entity (optional)
 alarm_control_panel:
@@ -164,7 +165,7 @@ This component decodes the proprietary Crow alarm panel serial protocol:
 | 0x20 | Memory event broadcast (event # logged; partial decode — see field notes) |
 | 0x50 | Output state |
 | 0x23 | Panel info — hardware / firmware |
-| 0x54 | `LCD_CONTENT` — raw hex via `panel_lcd`; byte layout notes in field docs |
+| 0x54 | `LCD_CONTENT` — log only (verbose raw hex) |
 | 0xA1 | Keypress (keypad → panel; also used for ESP transmit) |
 | 0xD2 | Memory cleared |
 

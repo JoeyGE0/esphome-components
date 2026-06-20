@@ -37,7 +37,7 @@ static const uint8_t MEMORY_EVENT = 0x20;      // MEM log broadcast (panel → b
 // [3-5]=timestamp (same LCD time → same bytes; formula not decoded), [6-8]=tail/flags (34.84=on battery, 68.08=restored).
 
 static const uint8_t OUTPUT_STATE = 0x50;      // PGM/output relay bitmask
-static const uint8_t LCD_CONTENT = 0x54;       // 0x54 bus payload (panel_lcd entity = raw hex only)
+static const uint8_t LCD_CONTENT = 0x54;       // 0x54 bus payload — log only
 // 0x23 panel info — stable on Elite-S v908.3: 00.03.8C.02.01.00.23.03
 //   bytes 1-2 BE16 → hardware (0x038C=908). PCB sticker reads V908.3; bus reports v908 only.
 //   byte 7 is always 0x03 on valid frames (protocol tail) — may or may not be the ".3" revision.
@@ -181,8 +181,6 @@ class CrowAlarmPanel : public Component {
   void register_panel_bus_connected(binary_sensor::BinarySensor *sensor) { this->panel_bus_connected_ = sensor; }
   void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
-  void register_panel_lcd(text_sensor::TextSensor *sensor) { this->panel_lcd_ = sensor; }
-  void register_suspected_temperature(text_sensor::TextSensor *sensor) { this->suspected_temperature_ = sensor; }
   void register_output_switch(switch_::Switch *output_switch, uint8_t output_number) {
     this->outputs_.push_back(std::move(CrowAlarmPanelOutput{
         .the_switch = output_switch,
@@ -233,9 +231,6 @@ class CrowAlarmPanel : public Component {
   bool panel_bus_connected_known_{false};
   text_sensor::TextSensor *hardware_version_;
   text_sensor::TextSensor *firmware_version_;
-  text_sensor::TextSensor *panel_lcd_;
-  text_sensor::TextSensor *suspected_temperature_{nullptr};
-  std::string last_panel_lcd_state_;
   std::string last_hardware_state_;
   std::string last_firmware_state_;
   alarm_control_panel::AlarmControlPanel *alarm_control_panel_;

@@ -10,13 +10,11 @@ text_sensor_ns = cg.esphome_ns.namespace("text_sensor")
 TextSensor = text_sensor_ns.class_("TextSensor", cg.EntityBase)
 
 CONF_ARMED_STATE = "armed_state"
-CONF_PANEL_LCD = "panel_lcd"
 CONF_PANEL_HARDWARE = "panel_hardware"
 CONF_PANEL_FIRMWARE = "panel_firmware"
 
 TYPES = [
     CONF_ARMED_STATE,
-    CONF_PANEL_LCD,
     CONF_PANEL_HARDWARE,
     CONF_PANEL_FIRMWARE,
 ]
@@ -29,7 +27,6 @@ _BASE_SCHEMA = {
 CONFIG_SCHEMA = cv.typed_schema(
     {
         CONF_ARMED_STATE: text_sensor.text_sensor_schema().extend(_BASE_SCHEMA).extend(cv.COMPONENT_SCHEMA),
-        CONF_PANEL_LCD: text_sensor.text_sensor_schema().extend(_BASE_SCHEMA).extend(cv.COMPONENT_SCHEMA),
         CONF_PANEL_HARDWARE: text_sensor.text_sensor_schema().extend(_BASE_SCHEMA).extend(cv.COMPONENT_SCHEMA),
         CONF_PANEL_FIRMWARE: text_sensor.text_sensor_schema().extend(_BASE_SCHEMA).extend(cv.COMPONENT_SCHEMA),
     },
@@ -46,8 +43,6 @@ def to_code(config):
 
     if typ == CONF_ARMED_STATE:
         cg.add(paren.register_armed_state(var))
-    elif typ == CONF_PANEL_LCD:
-        cg.add(paren.register_panel_lcd(var))
     elif typ == CONF_PANEL_HARDWARE:
         cg.add(paren.register_hardware_version(var))
     elif typ == CONF_PANEL_FIRMWARE:

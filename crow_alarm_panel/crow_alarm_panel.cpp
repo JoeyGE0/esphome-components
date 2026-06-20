@@ -136,12 +136,6 @@ void CrowAlarmPanel::setup() {
   if (this->firmware_version_ != nullptr) {
     this->publish_text_sensor_if_changed_(this->firmware_version_, &this->last_firmware_state_, "unknown");
   }
-  if (this->panel_lcd_ != nullptr) {
-    this->publish_text_sensor_if_changed_(this->panel_lcd_, &this->last_panel_lcd_state_, "unknown");
-  }
-  if (this->suspected_temperature_ != nullptr) {
-    this->suspected_temperature_->publish_state("unknown");
-  }
   if (this->panel_ready_ != nullptr) {
     this->panel_ready_->publish_state(false);
   }
@@ -342,55 +336,33 @@ void CrowAlarmPanel::loop() {
         break;
       }
       case PANEL_INFO: {
-        const bool need_hwfw = this->hardware_version_ != nullptr || this->firmware_version_ != nullptr;
-        const bool need_suspect = this->suspected_temperature_ != nullptr;
-        if (!need_hwfw && !need_suspect) {
+        if (this->hardware_version_ == nullptr && this->firmware_version_ == nullptr) {
           break;
         }
         const bool frame_valid = panel_info_frame_valid_(data);
-        if (need_hwfw) {
-          if (data.size() < 5) {
-            ESP_LOGW(TAG, "Panel info (0x23) too short for HW/FW");
-          } else if (!frame_valid) {
-            ESP_LOGW(TAG, "Panel info (0x23) ignored (bad tail): [%s]", format_hex_pretty(data).c_str());
+        if (data.size() < 5) {
+          ESP_LOGW(TAG, "Panel info (0x23) too short for HW/FW");
+        } else if (!frame_valid) {
+          ESP_LOGW(TAG, "Panel info (0x23) ignored (bad tail): [%s]", format_hex_pretty(data).c_str());
+        } else {
+          int main = (int) ((uint16_t(data[1]) << 8) | data[2]);
+          int s1 = data[3];
+          int s2 = data[4];
+          if (!panel_info_values_sane_(main, s1, s2)) {
+            ESP_LOGW(TAG, "Panel info (0x23) ignored (out of range): hw=%d fw=%d.%d [%s]", main, s1, s2,
+                     format_hex_pretty(data).c_str());
           } else {
-            int main = (int) ((uint16_t(data[1]) << 8) | data[2]);
-            int s1 = data[3];
-            int s2 = data[4];
-            if (!panel_info_values_sane_(main, s1, s2)) {
-              ESP_LOGW(TAG, "Panel info (0x23) ignored (out of range): hw=%d fw=%d.%d [%s]", main, s1, s2,
-                       format_hex_pretty(data).c_str());
-            } else {
-              if (this->hardware_version_ != nullptr) {
-                char hw[16];
-                snprintf(hw, sizeof(hw), "v%d", main);
-                this->publish_text_sensor_if_changed_(this->hardware_version_, &this->last_hardware_state_, hw);
-              }
-              if (this->firmware_version_ != nullptr) {
-                char fw[16];
-                snprintf(fw, sizeof(fw), "v%d.%d", s1, s2);
-                this->publish_text_sensor_if_changed_(this->firmware_version_, &this->last_firmware_state_, fw);
-              }
+            if (this->hardware_version_ != nullptr) {
+              char hw[16];
+              snprintf(hw, sizeof(hw), "v%d", main);
+              this->publish_text_sensor_if_changed_(this->hardware_version_, &this->last_hardware_state_, hw);
+            }
+            if (this->firmware_version_ != nullptr) {
+              char fw[16];
+              snprintf(fw, sizeof(fw), "v%d.%d", s1, s2);
+              this->publish_text_sensor_if_changed_(this->firmware_version_, &this->last_firmware_state_, fw);
             }
           }
-        }
-        if (need_suspect && !data.empty()) {
-          char sbuf[160];
-          if (data.size() >= 8) {
-            snprintf(sbuf, sizeof(sbuf),
-                     "b0=0x%02X tail=%02X.%02X.%02X | unverified (legacy guess: temp in 0x23); b6=%u dec",
-                     data[0], data[5], data[6], data[7], (unsigned) data[6]);
-          } else if (data.size() >= 6) {
-            snprintf(sbuf, sizeof(sbuf),
-                     "b0=0x%02X partial=%02X.%02X | unverified (legacy guess: temp in 0x23); b6=%u dec",
-                     data[0], data[5], data[6], (unsigned) data[6]);
-          } else if (data.size() >= 1) {
-            snprintf(sbuf, sizeof(sbuf),
-                     "only %zu B, b0=0x%02X | unverified (legacy guess: temp in 0x23)", data.size(), data[0]);
-          } else {
-            snprintf(sbuf, sizeof(sbuf), "empty payload | unverified (legacy guess: temp in 0x23)");
-          }
-          this->suspected_temperature_->publish_state(sbuf);
         }
         ESP_LOGD(TAG, "Panel info (0x23) [%s]", format_hex_pretty(data).c_str());
         break;
@@ -414,12 +386,6 @@ void CrowAlarmPanel::loop() {
         if (data.size() < 7) {
           ESP_LOGW(TAG, "LCD content (0x54) too short, discarding");
           break;
-        }
-        if (this->panel_lcd_ != nullptr) {
-          char buf[64];
-          snprintf(buf, sizeof(buf), "%02X.%02X.%02X.%02X.%02X.%02X.%02X", data[0], data[1], data[2], data[3],
-                   data[4], data[5], data[6]);
-          this->publish_text_sensor_if_changed_(this->panel_lcd_, &this->last_panel_lcd_state_, buf);
         }
         ESP_LOGV(TAG, "LCD 0x54 %s", format_hex_pretty(data).c_str());
         break;

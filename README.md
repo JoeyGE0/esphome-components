@@ -5,7 +5,7 @@ ESPHome custom component for integrating Crow/Arrowhead alarm panels with Home A
 ## Features
 
 - **Auto-created diagnostics**: Panel hardware, firmware, ready, mains power, battery state, alarm bus connected (no YAML)
-- **Optional YAML**: zones, `panel_lcd` raw sniffer, armed state, ACP, buttons
+- **Optional YAML**: zones, armed state, ACP, buttons
 - **Full Alarm Control Panel Entity**: Expose a Home Assistant alarm panel while keeping button/switch entities
 - **Keypad Bus Logging**: `on_message` trigger exposes raw bus frames
 - **Output State**: Switch entities reflect output states (read-only today)
@@ -54,39 +54,38 @@ external_components:
 
 ```yaml
 crow_alarm_panel:
-  name: "Crow Alarm"   # prefixes auto entity names, e.g. "Crow Alarm Panel hardware"
   id: alarm
   clock_pin: 18
   data_pin: 19
-  address: 0
+  address: 0  # Your keypad address
 
-# Auto-created (no YAML): Panel hardware, Panel firmware, Panel ready,
-# Mains power, Battery state, Alarm bus connected.
-# They boot OFF/disconnected/unknown until the panel bus talks.
+  keypads:               # Optional: label other keypads for logging
+    - name: "Main Keypad"
+      address: 0
+
+  # Optional: log every bus message
+  on_message:
+    - logger.log:
+        format: "%02x -  %s"
+        args: 
+        - "type"
+        - "format_hex_pretty(data).c_str()"
 
 text_sensor:
   - platform: crow_alarm_panel
-    crow_alarm_panel_id: alarm
     type: armed_state
     name: "Alarm Status"
 
 binary_sensor:
   - platform: crow_alarm_panel
-    crow_alarm_panel_id: alarm
     type: zone
-    zone: 2
-    name: "Hall PIR"
-    device_class: motion
-    include_bypass_sensor: true
-    filters:
-      - delayed_off: 2000ms
+    zone: 1
+    name: "Front Door"
 
-# Optional: raw 0x54 hex sniffer
-# text_sensor:
-#   - platform: crow_alarm_panel
-#     crow_alarm_panel_id: alarm
-#     type: panel_lcd
-#     name: "Panel LCD raw"
+  - platform: crow_alarm_panel
+    type: bypass
+    zone: 1
+    name: "Front Door Bypassed"
 
 # Full alarm control panel entity (optional)
 alarm_control_panel:
@@ -159,7 +158,7 @@ See **`crow_alarm_panel/README.md`** for full field decode notes (Elite-S v908.3
 | 0x20 | Memory event (event # logged; type/timestamp partial — see field notes) |
 | 0x50 | Output state |
 | 0x23 | Panel info — bytes 1–2 → **v908** (sticker **V908.3**); bytes 3–4 → **v2.1** |
-| 0x54 | `LCD_CONTENT` — raw hex via `panel_lcd` (field byte layout in component README) |
+| 0x54 | `LCD_CONTENT` — log only (verbose raw hex) |
 | 0xA1 | Keypress from keypad / ESP transmit |
 | 0xD2 | Memory cleared |
 
