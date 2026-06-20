@@ -7,33 +7,6 @@ namespace crow_alarm_panel {
 
 static const char *TAG = "crow_alarm_panel";
 
-static int decode_year_suffix_from_byte(uint8_t yb) {
-  int hi = (yb >> 4) & 0x0F;
-  int lo = yb & 0x0F;
-  if (hi <= 9 && lo <= 9) {
-    return hi * 10 + lo;
-  }
-  return (int) yb;
-}
-
-// 0x54 bytes [1][2] are big-endian minutes since midnight (e.g. 00.84 -> 02:12, 01.1D -> 04:45).
-static bool decode_panel_clock_time(uint8_t b1, uint8_t b2, int *hour_out, int *min_out) {
-  int total = (b1 << 8) | b2;
-  if (total >= 24 * 60) {
-    return false;
-  }
-  *hour_out = total / 60;
-  *min_out = total % 60;
-  return true;
-}
-
-static void format_byte_binary_(uint8_t byte, char *out) {
-  for (int i = 7; i >= 0; i--) {
-    *out++ = ((byte >> i) & 1) ? '1' : '0';
-  }
-  *out = '\0';
-}
-
 static bool panel_info_frame_valid_(const std::vector<uint8_t> &data) {
   if (data.size() < 8) {
     return false;
@@ -163,11 +136,8 @@ void CrowAlarmPanel::setup() {
   if (this->firmware_version_ != nullptr) {
     this->publish_text_sensor_if_changed_(this->firmware_version_, &this->last_firmware_state_, "unknown");
   }
-  if (this->panel_time_ != nullptr) {
-    this->publish_text_sensor_if_changed_(this->panel_time_, &this->last_panel_time_state_, "unknown");
-  }
-  if (this->panel_date_ != nullptr) {
-    this->publish_text_sensor_if_changed_(this->panel_date_, &this->last_panel_date_state_, "unknown");
+  if (this->panel_lcd_ != nullptr) {
+    this->publish_text_sensor_if_changed_(this->panel_lcd_, &this->last_panel_lcd_state_, "unknown");
   }
   if (this->suspected_temperature_ != nullptr) {
     this->suspected_temperature_->publish_state("unknown");
@@ -178,8 +148,13 @@ void CrowAlarmPanel::setup() {
   if (this->mains_power_ != nullptr) {
     this->mains_power_->publish_state(false);
   }
-  if (this->battery_state_experimental_ != nullptr) {
-    this->battery_state_experimental_->publish_state(false);
+  if (this->battery_state_ != nullptr) {
+    this->battery_state_->publish_state(false);
+  }
+  if (this->panel_bus_connected_ != nullptr) {
+    this->panel_bus_connected_->publish_state(false);
+    this->panel_bus_connected_published_ = false;
+    this->panel_bus_connected_known_ = true;
   }
   if (this->alarm_control_panel_ != nullptr) {
     this->alarm_control_panel_->publish_state(alarm_control_panel::ACP_STATE_DISARMED);
@@ -211,6 +186,19 @@ CrowAlarmPanelKeypad CrowAlarmPanel::find_keypad_(uint8_t address) {
     }
   }
   return {};
+}
+
+void CrowAlarmPanel::update_panel_bus_connected_() {
+  if (this->panel_bus_connected_ == nullptr) {
+    return;
+  }
+  const uint32_t elapsed_us = micros() - this->store_.last_clock_time_;
+  const bool connected = elapsed_us < CrowAlarmPanelStore::PANEL_BUS_CONNECTED_TIMEOUT_US;
+  if (!this->panel_bus_connected_known_ || connected != this->panel_bus_connected_published_) {
+    this->panel_bus_connected_published_ = connected;
+    this->panel_bus_connected_known_ = true;
+    this->panel_bus_connected_->publish_state(connected);
+  }
 }
 
 void CrowAlarmPanel::loop() {
@@ -319,7 +307,7 @@ void CrowAlarmPanel::loop() {
         }
         break;
       }
-      case PANEL_READY: {
+      case PANEL_STATUS: {
         if (data.size() < 3) {
           break;
         }
@@ -343,11 +331,11 @@ void CrowAlarmPanel::loop() {
               this->mains_power_->publish_state(false);
             }
           }
-          if (this->battery_state_experimental_ != nullptr) {
+          if (this->battery_state_ != nullptr) {
             if (b1 == 0x03) {
-              this->battery_state_experimental_->publish_state(true);
+              this->battery_state_->publish_state(true);
             } else if (b1 == 0x02 || ac_ok) {
-              this->battery_state_experimental_->publish_state(false);
+              this->battery_state_->publish_state(false);
             }
           }
         }
@@ -373,24 +361,14 @@ void CrowAlarmPanel::loop() {
               ESP_LOGW(TAG, "Panel info (0x23) ignored (out of range): hw=%d fw=%d.%d [%s]", main, s1, s2,
                        format_hex_pretty(data).c_str());
             } else {
-              char b1_bin[9];
-              char b2_bin[9];
-              char b3_bin[9];
-              char b4_bin[9];
-              format_byte_binary_(data[1], b1_bin);
-              format_byte_binary_(data[2], b2_bin);
-              format_byte_binary_(data[3], b3_bin);
-              format_byte_binary_(data[4], b4_bin);
               if (this->hardware_version_ != nullptr) {
-                char hw[192];
-                snprintf(hw, sizeof(hw), "v%d | b1=0x%02X(%s) b2=0x%02X(%s) BE=0x%04X | tail=23.03 valid=yes", main,
-                         data[1], b1_bin, data[2], b2_bin, main);
+                char hw[16];
+                snprintf(hw, sizeof(hw), "v%d", main);
                 this->publish_text_sensor_if_changed_(this->hardware_version_, &this->last_hardware_state_, hw);
               }
               if (this->firmware_version_ != nullptr) {
-                char fw[192];
-                snprintf(fw, sizeof(fw), "v%d.%d | b3=0x%02X(%s) b4=0x%02X(%s) | tail=23.03 valid=yes", s1, s2,
-                         data[3], b3_bin, data[4], b4_bin);
+                char fw[16];
+                snprintf(fw, sizeof(fw), "v%d.%d", s1, s2);
                 this->publish_text_sensor_if_changed_(this->firmware_version_, &this->last_firmware_state_, fw);
               }
             }
@@ -432,116 +410,18 @@ void CrowAlarmPanel::loop() {
                  format_hex_pretty(data).c_str());
         break;
       }
-      case CURRENT_TIME: {
+      case LCD_CONTENT: {
         if (data.size() < 7) {
-          ESP_LOGW(TAG, "Current time too short, discarding");
+          ESP_LOGW(TAG, "LCD content (0x54) too short, discarding");
           break;
         }
-        if (data[0] == 0 || data[0] > 7) {
-          ESP_LOGW(TAG, "Current time has invalid day index %d", data[0]);
-          break;
+        if (this->panel_lcd_ != nullptr) {
+          char buf[64];
+          snprintf(buf, sizeof(buf), "%02X.%02X.%02X.%02X.%02X.%02X.%02X", data[0], data[1], data[2], data[3],
+                   data[4], data[5], data[6]);
+          this->publish_text_sensor_if_changed_(this->panel_lcd_, &this->last_panel_lcd_state_, buf);
         }
-        const char *day_of_week = DAYS[data[0] - 1];
-        int hour = 0;
-        int mins = 0;
-        if (!decode_panel_clock_time(data[1], data[2], &hour, &mins)) {
-          ESP_LOGW(TAG, "Current time has invalid clock bytes %02x.%02x", data[1], data[2]);
-          break;
-        }
-        uint8_t sb = data[3];
-        int sec = 0;
-        bool phase_ok = false;
-        if (sb == 0x00) {
-          sec = 0;
-          phase_ok = true;
-        } else if (sb == 0x0F) {
-          sec = 15;
-          phase_ok = true;
-        } else if (sb == 0x1E) {
-          sec = 30;
-          phase_ok = true;
-        } else if (sb == 0x2D) {
-          sec = 45;
-          phase_ok = true;
-        }
-        // Date bytes are unreliable on phase 0x00 (top-of-minute); 0x0F is time-only.
-        bool date_trusted = (sb == 0x1E || sb == 0x2D);
-        int day = data[4];
-        int month = data[5];
-        uint8_t yb = data[6];
-        int naive_yy = decode_year_suffix_from_byte(yb);
-        int naive_year = 2000 + naive_yy;
-
-        if (date_trusted && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-          int year = naive_year;
-          if (year < 2020 || year > 2039) {
-            if (this->clock_time_valid_ && this->pt_year_ >= 2020 && this->pt_year_ <= 2039) {
-              year = this->pt_year_;
-            } else {
-              year = 2026;
-            }
-          } else if (this->clock_time_valid_ && this->pt_year_ >= 2020 && this->pt_year_ <= 2039) {
-            int prev = this->pt_year_;
-            if (year > prev + 2 || year < prev - 2) {
-              year = prev;
-            }
-          }
-          this->pt_year_ = year;
-          this->pt_month_ = month;
-          this->pt_day_ = day;
-        }
-
-        if (phase_ok && hour <= 23 && mins <= 59) {
-          this->pt_h_ = hour;
-          this->pt_m_ = mins;
-          this->pt_s_ = sec;
-          this->clock_time_valid_ = true;
-        }
-
-        if (this->clock_time_valid_ && (this->panel_time_ != nullptr || this->panel_date_ != nullptr)) {
-          char b0_bin[9];
-          char b1_bin[9];
-          char b2_bin[9];
-          char b3_bin[9];
-          char b4_bin[9];
-          char b5_bin[9];
-          char b6_bin[9];
-          format_byte_binary_(data[0], b0_bin);
-          format_byte_binary_(data[1], b1_bin);
-          format_byte_binary_(data[2], b2_bin);
-          format_byte_binary_(data[3], b3_bin);
-          format_byte_binary_(data[4], b4_bin);
-          format_byte_binary_(data[5], b5_bin);
-          format_byte_binary_(data[6], b6_bin);
-          const int total_mins = (data[1] << 8) | data[2];
-
-          if (this->panel_time_ != nullptr) {
-            char tbuf[192];
-            snprintf(tbuf, sizeof(tbuf),
-                     "%02d:%02d:%02d | %s b0=0x%02X(%s) b1=0x%02X(%s) b2=0x%02X(%s) b3=0x%02X(%s) | mins=%d",
-                     this->pt_h_, this->pt_m_, this->pt_s_, day_of_week, data[0], b0_bin, data[1], b1_bin, data[2],
-                     b2_bin, data[3], b3_bin, total_mins);
-            this->publish_text_sensor_if_changed_(this->panel_time_, &this->last_panel_time_state_, tbuf);
-          }
-          if (this->panel_date_ != nullptr) {
-            char dbuf[192];
-            if (this->pt_month_ >= 1 && this->pt_month_ <= 12 && this->pt_day_ >= 1 && this->pt_day_ <= 31 &&
-                this->pt_year_ >= 2020) {
-              snprintf(dbuf, sizeof(dbuf),
-                       "%04d-%02d-%02d | b4=0x%02X(%s) b5=0x%02X(%s) b6=0x%02X(%s) | ph=0x%02X trusted=%s",
-                       this->pt_year_, this->pt_month_, this->pt_day_, data[4], b4_bin, data[5], b5_bin, data[6],
-                       b6_bin, sb, date_trusted ? "yes" : "no");
-            } else {
-              snprintf(dbuf, sizeof(dbuf),
-                       "unknown | b4=0x%02X(%s) b5=0x%02X(%s) b6=0x%02X(%s) | ph=0x%02X trusted=%s", data[4],
-                       b4_bin, data[5], b5_bin, data[6], b6_bin, sb, date_trusted ? "yes" : "no");
-            }
-            this->publish_text_sensor_if_changed_(this->panel_date_, &this->last_panel_date_state_, dbuf);
-          }
-        }
-
-        ESP_LOGV(TAG, "Date/Time %s 20%02d-%02d-%02d %02d:%02d:%02d", day_of_week, data[6], data[5], data[4], hour,
-                 mins, data[3]);
+        ESP_LOGV(TAG, "LCD 0x54 %s", format_hex_pretty(data).c_str());
         break;
       }
       case RESPONSE_TIME:
@@ -664,6 +544,8 @@ void CrowAlarmPanel::loop() {
     ESP_LOGW(TAG, "Arm timeout reached, clearing arm flag");
     this->arm_in_progress_ = false;
   }
+
+  this->update_panel_bus_connected_();
 }
 
 bool CrowAlarmPanel::is_bus_idle_() {

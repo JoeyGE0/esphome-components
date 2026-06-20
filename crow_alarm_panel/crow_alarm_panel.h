@@ -14,30 +14,39 @@
 namespace esphome {
 namespace crow_alarm_panel {
 
-// 0x10: panel status. panel_ready uses payload byte2 (C1=ready, C0/60=not ready).
-// mains_power: 0x10 byte1 bit1 set (0x02|0x03); clear on 0x00; ignore 0x01 transition.
-// battery low: 0x10 byte1 == 0x03 (AC fail + batt low); off on 0x00 or 0x02.
-static const uint8_t PANEL_READY = 0x10;
-
-static const uint8_t ARMED_STATE = 0x11;
-static const uint8_t ZONE_STATE = 0x12;
+// 0x10 panel status (payload after address byte):
+//   byte1: 0x00=AC OK, 0x02=AC just lost, 0x03=AC fail/on battery, 0x01=restore transition (field-validated).
+//   byte2: 0xC1=ready, 0xC0=not ready (zone open). C2/C3 flicker with zones; use byte1 for power.
+//   mains_power sensor: true when byte1 is 0x02 or 0x03; false on 0x00. Ignore 0x01.
+//   battery_state: true when byte1==0x03 (battery low). Field-tested AC fail + batt low only;
+//     AC OK + batt low not tested (rare on this panel).
+static const uint8_t PANEL_STATUS = 0x10;    // panel status — byte1 AC power, byte2 ready (C1/C0)
+static const uint8_t ARMED_STATE = 0x11;       // armed_away, arming, disarmed, pending
+static const uint8_t ZONE_STATE = 0x12;        // zone triggered / alarmed / bypassed bitmasks
 static const uint8_t KEYPAD_COMMAND = 0x14;  // Beeps etc
-static const uint8_t KEYPAD_STATE = 0x15;
+static const uint8_t KEYPAD_STATE = 0x15;      // normal, installer, programming mode
 
 static const uint8_t SETTING_VALUE = 0x16;   // for locking LEDs
 static const uint8_t SETTING_VALUE2 = 0x17;  // for flashing LEDs < 255
 static const uint8_t SETTING_VALUE3 = 0x18;  // for flashing LEDs > 255
 
-static const uint8_t MEMORY_EVENT = 0x20;
+static const uint8_t RESPONSE_TIME = 0x19;     // entry/exit delay setting (minutes BE16)
+static const uint8_t MEMORY_EVENT = 0x20;      // MEM log broadcast (panel → bus)
+// 0x20 payload (9 bytes, after address): [0]=00, [1]=event slot (0xC8+event#-200),
+// [2]=event type (partial: 6E=AC fail, 1A=low batt, D7/19=restore, 97=batt OK, 70=live fault, 2B=armed, 5C=open),
+// [3-5]=timestamp (same LCD time → same bytes; formula not decoded), [6-8]=tail/flags (34.84=on battery, 68.08=restored).
 
-static const uint8_t OUTPUT_STATE = 0x50;
-static const uint8_t CURRENT_TIME = 0x54;
-// 0x23: bytes 1-2 BE16 → hardware revision (matches observed panels). Bytes 3-4 as firmware x.y is a guess, not protocol-confirmed. b0 + tail unknown; upstream once guessed temperature — also unverified.
-static const uint8_t PANEL_INFO = 0x23;
-static const uint8_t BOUNDARY = 0x7E;
+static const uint8_t OUTPUT_STATE = 0x50;      // PGM/output relay bitmask
+static const uint8_t LCD_CONTENT = 0x54;       // 0x54 bus payload (panel_lcd entity = raw hex only)
+// 0x23 panel info — stable on Elite-S v908.3: 00.03.8C.02.01.00.23.03
+//   bytes 1-2 BE16 → hardware (0x038C=908). PCB sticker reads V908.3; bus reports v908 only.
+//   byte 7 is always 0x03 on valid frames (protocol tail) — may or may not be the ".3" revision.
+//   bytes 3-4 published as firmware v2.1 (field guess, not protocol-confirmed).
+static const uint8_t PANEL_INFO = 0x23;        // hardware/firmware version
+static const uint8_t BOUNDARY = 0x7E;          // frame delimiter between bus packets
 // static const uint8_t KEYPRESS = 0xD1; // This is from upstream, but doesn't get sent by arrowhead panels that I can see
-static const uint8_t KEYPRESS = 0xA1;
-static const uint8_t MEMORY_CLEAR = 0xD2;
+static const uint8_t KEYPRESS = 0xA1;          // keypad button press (keypad → panel)
+static const uint8_t MEMORY_CLEAR = 0xD2;      // memory log cleared
 static const uint8_t PACKET_COMPLETE_MARKER = 0xFE; // This gets added after the boundary for keypad packets - signaling end of packet?
 
 // Keys 0 - 9 are 0-9
@@ -52,10 +61,6 @@ static const uint8_t BUFFER_LENGTH = 20;
 
 static const char *KEYS[18] = {"0", "1",     "2",      "3",       "4",   "5",    "6",      "7",       "8",
                                "9", "PANIC", "MEMORY", "CONTROL", "ARM", "STAY", "BYPASS", "PROGRAM", "ENTER"};
-
-static const uint8_t RESPONSE_TIME = 0x19;
-
-static const char *DAYS[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
 struct CrowAlarmPanelMessage {
   uint8_t type;
@@ -97,6 +102,7 @@ class CrowAlarmPanelStore {
 
  public:
   static const uint32_t BUS_IDLE_TIMEOUT_US = 5000;          // 5ms idle = bus free
+  static const uint32_t PANEL_BUS_CONNECTED_TIMEOUT_US = 2000000;  // 2s without clock = disconnected
   static const uint32_t MIN_TX_INTERVAL_MS = 50;             // Min 50ms between TX
   /**
    * Minimum interval between falling edges to avoid glitches. The clock runs at ~1.2kHz,
@@ -168,12 +174,14 @@ class CrowAlarmPanel : public Component {
   void register_panel_ready(binary_sensor::BinarySensor *sensor) { this->panel_ready_ = sensor; }
   /// Mains fault when 0x10 byte1 bit1 is set (0x02|0x03); clears on byte1 0x00; ignores 0x01 transition.
   void register_mains_power(binary_sensor::BinarySensor *sensor) { this->mains_power_ = sensor; }
-  /// Battery low when 0x10 byte1 == 0x03; off on 0x00 or 0x02. Only observed with AC fail on field panels.
-  void register_battery_state_experimental(binary_sensor::BinarySensor *sensor) { this->battery_state_experimental_ = sensor; }
+  /// Battery low when 0x10 byte1 == 0x03; off on 0x00 or 0x02. Field-tested AC fail + batt low only;
+  /// AC OK + batt low not tested (rare).
+  void register_battery_state(binary_sensor::BinarySensor *sensor) { this->battery_state_ = sensor; }
+  /// ON when clock edges seen within PANEL_BUS_CONNECTED_TIMEOUT_US (panel bus alive / ESP wired).
+  void register_panel_bus_connected(binary_sensor::BinarySensor *sensor) { this->panel_bus_connected_ = sensor; }
   void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
-  void register_panel_time(text_sensor::TextSensor *sensor) { this->panel_time_ = sensor; }
-  void register_panel_date(text_sensor::TextSensor *sensor) { this->panel_date_ = sensor; }
+  void register_panel_lcd(text_sensor::TextSensor *sensor) { this->panel_lcd_ = sensor; }
   void register_suspected_temperature(text_sensor::TextSensor *sensor) { this->suspected_temperature_ = sensor; }
   void register_output_switch(switch_::Switch *output_switch, uint8_t output_number) {
     this->outputs_.push_back(std::move(CrowAlarmPanelOutput{
@@ -198,6 +206,7 @@ class CrowAlarmPanel : public Component {
 
  protected:
   void publish_text_sensor_if_changed_(text_sensor::TextSensor *sensor, std::string *last_state, const std::string &state);
+  void update_panel_bus_connected_();
   CrowAlarmPanelKeypad find_keypad_(uint8_t address);
   bool is_bus_idle_();
 
@@ -218,21 +227,15 @@ class CrowAlarmPanel : public Component {
   text_sensor::TextSensor *armed_state_;
   binary_sensor::BinarySensor *panel_ready_;
   binary_sensor::BinarySensor *mains_power_{nullptr};
-  binary_sensor::BinarySensor *battery_state_experimental_{nullptr};
+  binary_sensor::BinarySensor *battery_state_{nullptr};
+  binary_sensor::BinarySensor *panel_bus_connected_{nullptr};
+  bool panel_bus_connected_published_{false};
+  bool panel_bus_connected_known_{false};
   text_sensor::TextSensor *hardware_version_;
   text_sensor::TextSensor *firmware_version_;
-  text_sensor::TextSensor *panel_time_;
-  text_sensor::TextSensor *panel_date_;
+  text_sensor::TextSensor *panel_lcd_;
   text_sensor::TextSensor *suspected_temperature_{nullptr};
-  bool clock_time_valid_{false};
-  uint8_t pt_h_{0};
-  uint8_t pt_m_{0};
-  uint8_t pt_s_{0};
-  int pt_year_{0};
-  int pt_month_{0};
-  int pt_day_{0};
-  std::string last_panel_time_state_;
-  std::string last_panel_date_state_;
+  std::string last_panel_lcd_state_;
   std::string last_hardware_state_;
   std::string last_firmware_state_;
   alarm_control_panel::AlarmControlPanel *alarm_control_panel_;

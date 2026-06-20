@@ -4,10 +4,8 @@ ESPHome custom component for integrating Crow/Arrowhead alarm panels with Home A
 
 ## Features
 
-- **Zone Monitoring**: Binary sensors for zone activity and bypass status
-- **Armed State**: Text sensor with arming/disarming states
-- **Panel Ready**: Binary sensor for panel ready status
-- **Panel Info**: Hardware, firmware, panel clock, and suspected tail are added automatically
+- **Auto-created diagnostics**: Panel hardware, firmware, ready, mains, battery state, alarm bus connected
+- **Optional YAML**: zones, `panel_lcd` raw sniffer, armed state, ACP, buttons
 - **Full Alarm Control Panel Entity**: Expose a Home Assistant alarm panel while keeping button/switch entities
 - **Keypad Bus Logging**: `on_message` trigger exposes raw bus frames
 - **Output State**: Switch entities reflect output states (read-only today)
@@ -56,42 +54,37 @@ external_components:
 
 ```yaml
 crow_alarm_panel:
+  name: "Crow Alarm"
   id: alarm
   clock_pin: 18
   data_pin: 19
-  address: 0  # Your keypad address
+  address: 0
 
-  keypads:               # Optional: label other keypads for logging
-    - name: "Main Keypad"
-      address: 0
-
-  # Optional: log every bus message
-  on_message:
-    - logger.log:
-        format: "%02x -  %s"
-        args: 
-        - "type"
-        - "format_hex_pretty(data).c_str()"
+# Auto-created: Panel hardware, firmware, ready, mains, battery, bus connected
 
 text_sensor:
   - platform: crow_alarm_panel
+    crow_alarm_panel_id: alarm
     type: armed_state
     name: "Alarm Status"
 
 binary_sensor:
   - platform: crow_alarm_panel
+    crow_alarm_panel_id: alarm
     type: zone
-    zone: 1
-    name: "Front Door"
+    zone: 2
+    name: "Hall PIR"
+    device_class: motion
+    include_bypass_sensor: true   # also creates "Hall PIR Bypassed" (read-only)
+    filters:
+      - delayed_off: 2000ms
 
-  - platform: crow_alarm_panel
-    type: bypass
-    zone: 1
-    name: "Front Door Bypassed"
-
-  - platform: crow_alarm_panel
-    type: panel_ready
-    name: "Panel Ready"
+  # Or separate bypass block (still supported):
+  # - platform: crow_alarm_panel
+  #   crow_alarm_panel_id: alarm
+  #   type: bypass
+  #   zone: 2
+  #   name: "Hall PIR Bypassed"
 
 # Full alarm control panel entity (optional)
 alarm_control_panel:
@@ -145,6 +138,9 @@ Connect your ESP32 to the alarm panel keypad bus:
 
 - Output switches are read-only; `set_output` is not implemented yet.
 - Setting the address as a different value to the keypad causes the keypad to reset. Unsure why at this point.
+- Crow keypad key bytes (`0x14` CHIME, `0x15` MEM, etc.) are outside the built-in `KEYS[]` map — sniffer logs "Unknown key index" for these.
+- Memory browse opcodes (`0xA9`, `0xA0`) and memory event text decode are not implemented — `0x20` logs event # only.
+- Transmission emulates keypad button presses (`0xA1`) only; no direct panel commands.
 
 ## Protocol
 
@@ -160,16 +156,83 @@ This component decodes the proprietary Crow alarm panel serial protocol:
 
 | Type | Description |
 |------|-------------|
-| 0x10 | Panel status / ready, not_ready |
+| 0x10 | Panel status — see field notes below |
 | 0x11 | Armed state (armed_away, arming, disarmed, pending) |
 | 0x12 | Zone state (triggered, alarmed, bypassed) |
-| 0x14 | Keypad command (beep commands) |
+| 0x14 | Keypad beep command (panel → keypad) |
 | 0x15 | Keypad state (normal, installer, programming) |
+| 0x20 | Memory event broadcast (event # logged; partial decode — see field notes) |
 | 0x50 | Output state |
-| 0x23 | Panel info (hardware/firmware + unknown (temp?) |
-| 0x54 | Current time/date |
-| 0xA1 | Keypress from physical keypad |
+| 0x23 | Panel info — hardware / firmware |
+| 0x54 | `LCD_CONTENT` — raw hex via `panel_lcd`; byte layout notes in field docs |
+| 0xA1 | Keypress (keypad → panel; also used for ESP transmit) |
 | 0xD2 | Memory cleared |
+
+### Opcodes seen on bus, not yet handled
+
+| Type | Description |
+|------|-------------|
+| 0x1E | Chime status reply after CHIME key (`byte 3`: `0x01`=on, `0x00`=off) |
+| 0xA9 | Memory LCD preview before `0x20` during MEM scroll |
+| 0xA0 | Exit memory mode (`a0.00.01`) |
+| 0xFE | End burst after memory timeout |
+
+### Field notes — Arrowhead Elite-S (PCB **V908.3**, bus **v908** / fw **v2.1**)
+
+Validated on live bus captures (`keypad-bus-notes.md` in project repo).
+
+#### `0x10` panel status (`00.B1.B2.00.00`)
+
+| Byte 1 | Meaning (live) |
+|--------|----------------|
+| `0x00` | AC mains OK |
+| `0x02` | AC just lost (~first seconds after power cut) |
+| `0x03` | AC fail + battery low (sustained on battery; same byte after AC cut) |
+| `0x01` | Transition when AC restoring |
+
+| Byte 2 | Meaning |
+|--------|---------|
+| `0xC1` | Panel ready |
+| `0xC0` | Not ready (zone open) |
+
+**Power cycle vs MEM log order:** live `02→03` happens first; MEM logs "AC fail" later while still on `03`; "Low battery" MEM entry comes after that (same live `03`); restore is live `01→00` then MEM restore chain.
+
+**Component mapping:** `mains_power` ON when byte1 is `0x02` or `0x03`. `battery_state` when byte1 is `0x03` (battery low). Only field-tested with AC fail + batt low together; AC OK + batt low not tested (rare).
+
+#### `0x23` panel info
+
+Stable payload: `00.03.8C.02.01.00.23.03`
+
+| Bytes | Decode |
+|-------|--------|
+| 1–2 | Hardware **v908** (`0x038C` BE16) |
+| 3–4 | Firmware **v2.1** (best guess) |
+| 6–7 | Frame tail `23.03` (required for valid frame) |
+
+PCB sticker reads **V908.3**. Bus reports **908** only; trailing `0x03` may be revision or protocol marker — unconfirmed.
+
+#### `0x20` memory events (9-byte payload)
+
+| Byte | Partial decode |
+|------|----------------|
+| 1 | Event slot (`0xC8 + event# − 200`) |
+| 2 | Event type: `6E` AC fail, `1A` low batt, `D7`/`19` restore, `97` batt OK, `70` live fault screen, `2B` armed, `5C` open by user |
+| 3–5 | Timestamp chunk (same LCD time → same bytes; not converted to clock yet) |
+| 6–8 | Era flags: `34.84…` on battery, `68.08…` after AC restore |
+
+Historical `0x20` traffic only during MEM browse — not on idle bus.
+
+#### Crow keypad `0xA1` key bytes (Elite-S)
+
+| Button | Bus byte |
+|--------|----------|
+| 0–9 | `0x00`–`0x09` |
+| PROGRAM / ENTER | `0x10` / `0x11` |
+| CHIME | `0x14` |
+| MEM | `0x15` |
+| CONTROL | `0x16` |
+| ARM / STAY | `0x0D` / `0x0E` *(constants in code, field-unconfirmed)* |
+| Unknown | `0x23` / `0x24` *(A/B?)* |
 
 ## Development
 

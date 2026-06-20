@@ -4,11 +4,8 @@ ESPHome custom component for integrating Crow/Arrowhead alarm panels with Home A
 
 ## Features
 
-- **Zone Monitoring**: Binary sensors for zone activity and bypass status
-- **Armed State**: Text sensor with arming/disarming states
-- **Panel Ready**: Binary sensor for panel ready status
-- **Mains & Battery (Experimental)**: Diagnostic binary sensors for mains power and experimental battery state
-- **Panel Info**: Hardware, firmware, and panel clock (time/date/year) are added automatically
+- **Auto-created diagnostics**: Panel hardware, firmware, ready, mains power, battery state, alarm bus connected (no YAML)
+- **Optional YAML**: zones, `panel_lcd` raw sniffer, armed state, ACP, buttons
 - **Full Alarm Control Panel Entity**: Expose a Home Assistant alarm panel while keeping button/switch entities
 - **Keypad Bus Logging**: `on_message` trigger exposes raw bus frames
 - **Output State**: Switch entities reflect output states (read-only today)
@@ -57,50 +54,39 @@ external_components:
 
 ```yaml
 crow_alarm_panel:
+  name: "Crow Alarm"   # prefixes auto entity names, e.g. "Crow Alarm Panel hardware"
   id: alarm
   clock_pin: 18
   data_pin: 19
-  address: 0  # Your keypad address
+  address: 0
 
-  keypads:               # Optional: label other keypads for logging
-    - name: "Main Keypad"
-      address: 0
-
-  # Optional: log every bus message
-  on_message:
-    - logger.log:
-        format: "%02x -  %s"
-        args: 
-        - "type"
-        - "format_hex_pretty(data).c_str()"
+# Auto-created (no YAML): Panel hardware, Panel firmware, Panel ready,
+# Mains power, Battery state, Alarm bus connected.
+# They boot OFF/disconnected/unknown until the panel bus talks.
 
 text_sensor:
   - platform: crow_alarm_panel
+    crow_alarm_panel_id: alarm
     type: armed_state
     name: "Alarm Status"
 
 binary_sensor:
   - platform: crow_alarm_panel
+    crow_alarm_panel_id: alarm
     type: zone
-    zone: 1
-    name: "Front Door"
+    zone: 2
+    name: "Hall PIR"
+    device_class: motion
+    include_bypass_sensor: true
+    filters:
+      - delayed_off: 2000ms
 
-  - platform: crow_alarm_panel
-    type: bypass
-    zone: 1
-    name: "Front Door Bypassed"
-
-  - platform: crow_alarm_panel
-    type: panel_ready
-    name: "Panel Ready"
-
-  - platform: crow_alarm_panel
-    type: mains_power
-    name: "Mains power"
-
-  - platform: crow_alarm_panel
-    type: battery_state_experimental
-    name: "Battery state (Experimental)"
+# Optional: raw 0x54 hex sniffer
+# text_sensor:
+#   - platform: crow_alarm_panel
+#     crow_alarm_panel_id: alarm
+#     type: panel_lcd
+#     name: "Panel LCD raw"
 
 # Full alarm control panel entity (optional)
 alarm_control_panel:
@@ -154,31 +140,30 @@ Connect your ESP32 to the alarm panel keypad bus:
 
 - Output switches are read-only; `set_output` is not implemented yet.
 - Setting the address as a different value to the keypad causes the keypad to reset. Unsure why at this point.
+- Crow keypad keys (`0x14` CHIME, `0x15` MEM, etc.) log as unknown index — see `crow_alarm_panel/README.md` field notes.
+- Memory LCD / event text decode not implemented (`0xA9`, `0xA0`, partial `0x20` only).
 
 ## Protocol
 
-This component decodes the proprietary Crow alarm panel serial protocol:
-
-- **Communication Type**: Clock-synchronous serial
-- **Bit Order**: LSB-first transmission
-- **Frame Markers**: 0x7E boundary bytes
-- **Interrupt-Driven**: GPIO interrupt on clock falling edge
-- **Message Types**: Zone state, armed state, keypresses, outputs, time, memory events
+See **`crow_alarm_panel/README.md`** for full field decode notes (Elite-S v908.3). Summary:
 
 ### Supported Message Types
 
 | Type | Description |
 |------|-------------|
-| 0x10 | Panel status (ready/not ready), mains state, battery warning (experimental) |
+| 0x10 | Panel status — byte1: `00`=AC OK, `02`=just lost, `03`=on battery, `01`=restore transition; byte2: `C1`/`C0` ready |
 | 0x11 | Armed state (armed_away, arming, disarmed, pending) |
 | 0x12 | Zone state (triggered, alarmed, bypassed) |
-| 0x14 | Keypad command (beep commands) |
+| 0x14 | Keypad beep command |
 | 0x15 | Keypad state (normal, installer, programming) |
+| 0x20 | Memory event (event # logged; type/timestamp partial — see field notes) |
 | 0x50 | Output state |
-| 0x23 | Panel info (hardware/firmware + unknown |
-| 0x54 | Current time/date |
-| 0xA1 | Keypress from physical keypad |
+| 0x23 | Panel info — bytes 1–2 → **v908** (sticker **V908.3**); bytes 3–4 → **v2.1** |
+| 0x54 | `LCD_CONTENT` — raw hex via `panel_lcd` (field byte layout in component README) |
+| 0xA1 | Keypress from keypad / ESP transmit |
 | 0xD2 | Memory cleared |
+
+Also seen, not handled: `0x1E` (chime status), `0xA9` / `0xA0` (memory browse), `0xFE` (memory timeout).
 
 ## Development
 

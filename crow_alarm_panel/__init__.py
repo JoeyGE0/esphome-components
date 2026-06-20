@@ -1,13 +1,24 @@
+from typing import Optional
+
 from esphome import pins, automation
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import esphome.components.binary_sensor as binary_sensor_comp
+import esphome.components.text_sensor as text_sensor_comp
 from esphome.components import alarm_control_panel as acp
+from esphome.core import ID
 from esphome.const import (
     CONF_ADDRESS,
     CONF_CLOCK_PIN,
     CONF_DATA_PIN,
+    CONF_ICON,
     CONF_ID,
     CONF_NAME,
+    DEVICE_CLASS_BATTERY,
+    DEVICE_CLASS_CONNECTIVITY,
+    DEVICE_CLASS_PROBLEM,
+    ENTITY_CATEGORY_DIAGNOSTIC,
+    ENTITY_CATEGORY_NONE,
 )
 
 AUTO_LOAD = ["binary_sensor", "text_sensor", "switch", "button", "alarm_control_panel"]
@@ -43,6 +54,56 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
+def _default_entity_name(config, title: str) -> str:
+    base = config.get(CONF_NAME)
+    return f"{base} {title}" if base else title
+
+
+async def _register_diagnostic_text_sensor(
+    config, parent_id, suffix: str, title: str, *, icon: Optional[str] = None
+):
+    sch = text_sensor_comp.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC)
+    child_id = ID(
+        f"{parent_id.id}_{suffix}",
+        is_declaration=True,
+        type=text_sensor_comp.TextSensor,
+    )
+    body = {
+        CONF_ID: child_id,
+        CONF_NAME: _default_entity_name(config, title),
+    }
+    if icon is not None:
+        body[CONF_ICON] = icon
+    sens_cfg = sch(body)
+    return await text_sensor_comp.new_text_sensor(sens_cfg)
+
+
+async def _register_diagnostic_binary_sensor(
+    config,
+    parent_id,
+    suffix: str,
+    title: str,
+    *,
+    device_class: Optional[str] = None,
+    entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+):
+    kwargs = {"entity_category": entity_category}
+    if device_class is not None:
+        kwargs["device_class"] = device_class
+    sch = binary_sensor_comp.binary_sensor_schema(**kwargs)
+    child_id = ID(
+        f"{parent_id.id}_{suffix}",
+        is_declaration=True,
+        type=binary_sensor_comp.BinarySensor,
+    )
+    body = {
+        CONF_ID: child_id,
+        CONF_NAME: _default_entity_name(config, title),
+    }
+    sens_cfg = sch(body)
+    return await binary_sensor_comp.new_binary_sensor(sens_cfg)
+
+
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
@@ -65,3 +126,38 @@ async def to_code(config):
             [(cg.uint8, "type"), (cg.std_vector.template(cg.uint8), "data")],
             config[CONF_ON_MESSAGE],
         )
+
+    pid = config[CONF_ID]
+
+    hw = await _register_diagnostic_text_sensor(
+        config, pid, "panel_hardware_ts", "Panel hardware", icon="mdi:chip"
+    )
+    cg.add(var.register_hardware_version(hw))
+    fw = await _register_diagnostic_text_sensor(
+        config, pid, "panel_firmware_ts", "Panel firmware", icon="mdi:application"
+    )
+    cg.add(var.register_firmware_version(fw))
+
+    ready = await _register_diagnostic_binary_sensor(
+        config, pid, "panel_ready_bs", "Panel ready", entity_category=ENTITY_CATEGORY_NONE
+    )
+    cg.add(var.register_panel_ready(ready))
+
+    mains = await _register_diagnostic_binary_sensor(
+        config, pid, "mains_power_bs", "Mains power", device_class=DEVICE_CLASS_PROBLEM
+    )
+    cg.add(var.register_mains_power(mains))
+
+    batt = await _register_diagnostic_binary_sensor(
+        config, pid, "battery_state_bs", "Battery state", device_class=DEVICE_CLASS_BATTERY
+    )
+    cg.add(var.register_battery_state(batt))
+
+    bus = await _register_diagnostic_binary_sensor(
+        config,
+        pid,
+        "panel_bus_connected_bs",
+        "Alarm bus connected",
+        device_class=DEVICE_CLASS_CONNECTIVITY,
+    )
+    cg.add(var.register_panel_bus_connected(bus))
