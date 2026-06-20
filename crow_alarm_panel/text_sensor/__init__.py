@@ -10,40 +10,20 @@ text_sensor_ns = cg.esphome_ns.namespace("text_sensor")
 TextSensor = text_sensor_ns.class_("TextSensor", cg.EntityBase)
 
 CONF_ARMED_STATE = "armed_state"
-CONF_PANEL_HARDWARE = "panel_hardware"
-CONF_PANEL_FIRMWARE = "panel_firmware"
 
-TYPES = [
-    CONF_ARMED_STATE,
-    CONF_PANEL_HARDWARE,
-    CONF_PANEL_FIRMWARE,
-]
-
-_BASE_SCHEMA = {
-    cv.GenerateID(): cv.declare_id(TextSensor),
-    cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
-}
-
-CONFIG_SCHEMA = cv.typed_schema(
+CONFIG_SCHEMA = text_sensor.text_sensor_schema().extend(
     {
-        CONF_ARMED_STATE: text_sensor.text_sensor_schema().extend(_BASE_SCHEMA).extend(cv.COMPONENT_SCHEMA),
-        CONF_PANEL_HARDWARE: text_sensor.text_sensor_schema().extend(_BASE_SCHEMA).extend(cv.COMPONENT_SCHEMA),
-        CONF_PANEL_FIRMWARE: text_sensor.text_sensor_schema().extend(_BASE_SCHEMA).extend(cv.COMPONENT_SCHEMA),
-    },
-    lower=True,
-)
+        cv.GenerateID(): cv.declare_id(TextSensor),
+        cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
+        cv.Required(CONF_TYPE): cv.one_of(CONF_ARMED_STATE, lower=True),
+    }
+).extend(cv.COMPONENT_SCHEMA)
 
 
 def to_code(config):
     paren = yield cg.get_variable(config[CONF_CROW_ALARM_PANEL_ID])
     var = cg.new_Pvariable(config[CONF_ID])
-    typ = config[CONF_TYPE]
 
     yield text_sensor.register_text_sensor(var, config)
 
-    if typ == CONF_ARMED_STATE:
-        cg.add(paren.register_armed_state(var))
-    elif typ == CONF_PANEL_HARDWARE:
-        cg.add(paren.register_hardware_version(var))
-    elif typ == CONF_PANEL_FIRMWARE:
-        cg.add(paren.register_firmware_version(var))
+    cg.add(paren.register_armed_state(var))

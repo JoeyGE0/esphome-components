@@ -6,11 +6,7 @@ from esphome.const import (
     CONF_ID,
     CONF_NAME,
     CONF_TYPE,
-    DEVICE_CLASS_BATTERY,
-    DEVICE_CLASS_CONNECTIVITY,
-    DEVICE_CLASS_PROBLEM,
     ENTITY_CATEGORY_DIAGNOSTIC,
-    ENTITY_CATEGORY_NONE,
 )
 from .. import CrowAlarmPanel, CONF_CROW_ALARM_PANEL_ID
 
@@ -22,11 +18,6 @@ BinarySensor = binary_sensor_ns.class_("BinarySensor", cg.EntityBase)
 CONF_ZONE = "zone"
 CONF_BYPASS = "bypass"
 CONF_INCLUDE_BYPASS_SENSOR = "include_bypass_sensor"
-CONF_PANEL_READY = "panel_ready"
-CONF_MAINS_POWER = "mains_power"
-CONF_BATTERY_STATE = "battery_state"
-CONF_BATTERY_STATE_EXPERIMENTAL = "battery_state_experimental"  # deprecated alias
-CONF_PANEL_BUS_CONNECTED = "panel_bus_connected"
 
 ZONE_SCHEMA = binary_sensor.binary_sensor_schema().extend(
     {
@@ -47,54 +38,10 @@ BYPASS_ONLY_SCHEMA = binary_sensor.binary_sensor_schema(
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
-PANEL_READY_SCHEMA = binary_sensor.binary_sensor_schema(
-    entity_category=ENTITY_CATEGORY_NONE,
-).extend(
-    {
-        cv.GenerateID(): cv.declare_id(BinarySensor),
-        cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
-    }
-).extend(cv.COMPONENT_SCHEMA)
-
-MAINS_POWER_SCHEMA = binary_sensor.binary_sensor_schema(
-    entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-    device_class=DEVICE_CLASS_PROBLEM,
-).extend(
-    {
-        cv.GenerateID(): cv.declare_id(BinarySensor),
-        cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
-    }
-).extend(cv.COMPONENT_SCHEMA)
-
-BATTERY_STATE_SCHEMA = binary_sensor.binary_sensor_schema(
-    entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-    device_class=DEVICE_CLASS_BATTERY,
-).extend(
-    {
-        cv.GenerateID(): cv.declare_id(BinarySensor),
-        cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
-    }
-).extend(cv.COMPONENT_SCHEMA)
-
-PANEL_BUS_CONNECTED_SCHEMA = binary_sensor.binary_sensor_schema(
-    entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-    device_class=DEVICE_CLASS_CONNECTIVITY,
-).extend(
-    {
-        cv.GenerateID(): cv.declare_id(BinarySensor),
-        cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
-    }
-).extend(cv.COMPONENT_SCHEMA)
-
 CONFIG_SCHEMA = cv.typed_schema(
     {
         CONF_ZONE: ZONE_SCHEMA,
         CONF_BYPASS: BYPASS_ONLY_SCHEMA,
-        CONF_PANEL_READY: PANEL_READY_SCHEMA,
-        CONF_MAINS_POWER: MAINS_POWER_SCHEMA,
-        CONF_BATTERY_STATE: BATTERY_STATE_SCHEMA,
-        CONF_BATTERY_STATE_EXPERIMENTAL: BATTERY_STATE_SCHEMA,
-        CONF_PANEL_BUS_CONNECTED: PANEL_BUS_CONNECTED_SCHEMA,
     }
 )
 
@@ -138,11 +85,3 @@ def to_code(config):
             cg.add(paren.register_zone_bypass(bypass_var, config[CONF_ZONE]))
     elif type == CONF_BYPASS:
         cg.add(paren.register_zone_bypass(var, config[CONF_ZONE]))
-    elif type == CONF_PANEL_READY:
-        cg.add(paren.register_panel_ready(var))
-    elif type == CONF_MAINS_POWER:
-        cg.add(paren.register_mains_power(var))
-    elif type in (CONF_BATTERY_STATE, CONF_BATTERY_STATE_EXPERIMENTAL):
-        cg.add(paren.register_battery_state(var))
-    elif type == CONF_PANEL_BUS_CONNECTED:
-        cg.add(paren.register_panel_bus_connected(var))
