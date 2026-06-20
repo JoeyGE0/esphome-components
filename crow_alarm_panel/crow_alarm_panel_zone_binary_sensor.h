@@ -7,7 +7,13 @@ namespace crow_alarm_panel {
 
 class CrowAlarmPanelZoneBinarySensor : public binary_sensor::BinarySensor {
  public:
-  void publish_zone_state(bool open, bool bypassed);
+  void publish_zone_state(bool open, bool bypassed) {
+    const bool bypass_changed = bypassed != this->bypassed_;
+    this->bypassed_ = bypassed;
+    if (!this->has_state() || this->state != open || bypass_changed) {
+      this->publish_state(open);
+    }
+  }
 
   bool get_bypassed() const { return this->bypassed_; }
 
