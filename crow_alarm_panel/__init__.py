@@ -31,6 +31,9 @@ CONF_ON_MESSAGE = "on_message"
 crow_alarm_panel_ns = cg.esphome_ns.namespace("crow_alarm_panel")
 
 CrowAlarmPanel = crow_alarm_panel_ns.class_("CrowAlarmPanel", cg.Component)
+CrowAlarmPanelZoneBinarySensor = crow_alarm_panel_ns.class_(
+    "CrowAlarmPanelZoneBinarySensor", binary_sensor_comp.BinarySensor
+)
 CrowAlarmControlPanel = crow_alarm_panel_ns.class_(
     "CrowAlarmControlPanel", acp.AlarmControlPanel, cg.Component
 )

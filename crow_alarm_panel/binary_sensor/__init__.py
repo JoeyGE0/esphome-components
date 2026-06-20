@@ -5,23 +5,26 @@ from esphome.core import ID
 from esphome.const import (
     CONF_ID,
     CONF_NAME,
+    CONF_OUTPUT,
     CONF_TYPE,
     ENTITY_CATEGORY_DIAGNOSTIC,
 )
-from .. import CrowAlarmPanel, CONF_CROW_ALARM_PANEL_ID
+from .. import (
+    CrowAlarmPanel,
+    CrowAlarmPanelZoneBinarySensor,
+    CONF_CROW_ALARM_PANEL_ID,
+)
 
 DEPENDENCIES = ["crow_alarm_panel"]
 
-binary_sensor_ns = cg.esphome_ns.namespace("binary_sensor")
-BinarySensor = binary_sensor_ns.class_("BinarySensor", cg.EntityBase)
-
 CONF_ZONE = "zone"
 CONF_BYPASS = "bypass"
+CONF_OUTPUT = "output"
 CONF_INCLUDE_BYPASS_SENSOR = "include_bypass_sensor"
 
-ZONE_SCHEMA = binary_sensor.binary_sensor_schema().extend(
+ZONE_SCHEMA = binary_sensor.binary_sensor_schema(CrowAlarmPanelZoneBinarySensor).extend(
     {
-        cv.GenerateID(): cv.declare_id(BinarySensor),
+        cv.GenerateID(): cv.declare_id(CrowAlarmPanelZoneBinarySensor),
         cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
         cv.Optional(CONF_ZONE): cv.positive_int,
         cv.Optional(CONF_INCLUDE_BYPASS_SENSOR, default=False): cv.boolean,
@@ -32,9 +35,17 @@ BYPASS_ONLY_SCHEMA = binary_sensor.binary_sensor_schema(
     entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
 ).extend(
     {
-        cv.GenerateID(): cv.declare_id(BinarySensor),
+        cv.GenerateID(): cv.declare_id(binary_sensor.BinarySensor),
         cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
         cv.Optional(CONF_ZONE): cv.positive_int,
+    }
+).extend(cv.COMPONENT_SCHEMA)
+
+OUTPUT_SCHEMA = binary_sensor.binary_sensor_schema().extend(
+    {
+        cv.GenerateID(): cv.declare_id(binary_sensor.BinarySensor),
+        cv.GenerateID(CONF_CROW_ALARM_PANEL_ID): cv.use_id(CrowAlarmPanel),
+        cv.Required(CONF_OUTPUT): cv.positive_int,
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -42,6 +53,7 @@ CONFIG_SCHEMA = cv.typed_schema(
     {
         CONF_ZONE: ZONE_SCHEMA,
         CONF_BYPASS: BYPASS_ONLY_SCHEMA,
+        CONF_OUTPUT: OUTPUT_SCHEMA,
     }
 )
 
@@ -61,27 +73,28 @@ def to_code(config):
 
     if type == CONF_ZONE:
         cg.add(paren.register_zone(var, config[CONF_ZONE]))
-        if config[CONF_INCLUDE_BYPASS_SENSOR]:
-            bypass_id = ID(
-                f"{config[CONF_ID].id}_bypass",
-                is_declaration=True,
-                type=BinarySensor,
-            )
-            bypass_schema = binary_sensor.binary_sensor_schema(
-                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-            ).extend(
-                {
-                    cv.GenerateID(): cv.declare_id(BinarySensor),
-                }
-            )
-            bypass_config = bypass_schema(
-                {
-                    CONF_ID: bypass_id,
-                    CONF_NAME: _bypass_sensor_name(config),
-                }
-            )
-            bypass_var = cg.new_Pvariable(bypass_id)
-            yield binary_sensor.register_binary_sensor(bypass_var, bypass_config)
-            cg.add(paren.register_zone_bypass(bypass_var, config[CONF_ZONE]))
+        bypass_id = ID(
+            f"{config[CONF_ID].id}_bypass",
+            is_declaration=True,
+            type=binary_sensor.BinarySensor,
+        )
+        bypass_schema = binary_sensor.binary_sensor_schema(
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ).extend(
+            {
+                cv.GenerateID(): cv.declare_id(binary_sensor.BinarySensor),
+            }
+        )
+        bypass_config = bypass_schema(
+            {
+                CONF_ID: bypass_id,
+                CONF_NAME: _bypass_sensor_name(config),
+            }
+        )
+        bypass_var = cg.new_Pvariable(bypass_id)
+        yield binary_sensor.register_binary_sensor(bypass_var, bypass_config)
+        cg.add(paren.register_zone_bypass(bypass_var, config[CONF_ZONE]))
     elif type == CONF_BYPASS:
         cg.add(paren.register_zone_bypass(var, config[CONF_ZONE]))
+    elif type == CONF_OUTPUT:
+        cg.add(paren.register_output_binary_sensor(var, config[CONF_OUTPUT]))

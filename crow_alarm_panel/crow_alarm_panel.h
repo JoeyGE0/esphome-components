@@ -1,5 +1,6 @@
 #pragma once
 
+#include "crow_alarm_panel_zone_binary_sensor.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/text_sensor/text_sensor.h"
@@ -115,13 +116,14 @@ class CrowAlarmPanelStore {
 };
 
 struct CrowAlarmPanelZone {
-  binary_sensor::BinarySensor *motion_binary_sensor;
+  CrowAlarmPanelZoneBinarySensor *motion_binary_sensor;
   binary_sensor::BinarySensor *bypass_binary_sensor;
   uint8_t zone;
 };
 
 struct CrowAlarmPanelOutput {
-  switch_::Switch *the_switch;
+  binary_sensor::BinarySensor *binary_sensor{nullptr};
+  switch_::Switch *the_switch{nullptr};
   uint8_t number;
 };
 
@@ -143,7 +145,7 @@ class CrowAlarmPanel : public Component {
     }));
   }
 
-  void register_zone(binary_sensor::BinarySensor *binary_sensor, uint8_t zone) {
+  void register_zone(CrowAlarmPanelZoneBinarySensor *binary_sensor, uint8_t zone) {
     for (auto &z : this->zones_) {
       if (z.zone == zone) {
         z.motion_binary_sensor = binary_sensor;
@@ -181,11 +183,31 @@ class CrowAlarmPanel : public Component {
   void register_panel_bus_connected(binary_sensor::BinarySensor *sensor) { this->panel_bus_connected_ = sensor; }
   void register_hardware_version(text_sensor::TextSensor *sensor) { this->hardware_version_ = sensor; }
   void register_firmware_version(text_sensor::TextSensor *sensor) { this->firmware_version_ = sensor; }
+  void register_output_binary_sensor(binary_sensor::BinarySensor *sensor, uint8_t output_number) {
+    for (auto &output : this->outputs_) {
+      if (output.number == output_number) {
+        output.binary_sensor = sensor;
+        return;
+      }
+    }
+    this->outputs_.push_back(CrowAlarmPanelOutput{
+        .binary_sensor = sensor,
+        .the_switch = nullptr,
+        .number = output_number,
+    });
+  }
   void register_output_switch(switch_::Switch *output_switch, uint8_t output_number) {
-    this->outputs_.push_back(std::move(CrowAlarmPanelOutput{
+    for (auto &output : this->outputs_) {
+      if (output.number == output_number) {
+        output.the_switch = output_switch;
+        return;
+      }
+    }
+    this->outputs_.push_back(CrowAlarmPanelOutput{
+        .binary_sensor = nullptr,
         .the_switch = output_switch,
         .number = output_number,
-    }));
+    });
   }
   void register_alarm_control_panel(alarm_control_panel::AlarmControlPanel *acp) { this->alarm_control_panel_ = acp; }
 

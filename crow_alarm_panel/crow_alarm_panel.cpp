@@ -226,7 +226,12 @@ void CrowAlarmPanel::loop() {
         ESP_LOGD(TAG, "Output state [%s]", format_hex_pretty(data).c_str());
         for (CrowAlarmPanelOutput output : this->outputs_) {
           bool on = ((data[0] >> (output.number - 1)) & 0x01);
-          output.the_switch->publish_state(on);
+          if (output.binary_sensor != nullptr) {
+            output.binary_sensor->publish_state(on);
+          }
+          if (output.the_switch != nullptr) {
+            output.the_switch->publish_state(on);
+          }
         }
         break;
       case ZONE_STATE: {
@@ -242,7 +247,7 @@ void CrowAlarmPanel::loop() {
           bool bypassed = ((data[3] >> (zone.zone - 1)) & 0x01);
 
           if (zone.motion_binary_sensor != nullptr) {
-            zone.motion_binary_sensor->publish_state(triggered | triggered_alarmed);
+            zone.motion_binary_sensor->publish_zone_state(triggered | triggered_alarmed, bypassed);
           }
           if (zone.bypass_binary_sensor != nullptr) {
             zone.bypass_binary_sensor->publish_state(bypassed);
